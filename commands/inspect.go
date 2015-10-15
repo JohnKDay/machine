@@ -6,7 +6,7 @@ import (
 	"os"
 	"text/template"
 
-	"github.com/docker/machine/log"
+	"github.com/docker/machine/libmachine/log"
 
 	"github.com/codegangsta/cli"
 )
@@ -23,6 +23,11 @@ var funcMap = template.FuncMap{
 }
 
 func cmdInspect(c *cli.Context) {
+	if len(c.Args()) == 0 {
+		cli.ShowCommandHelp(c, "inspect")
+		log.Fatal("You must specify a machine name")
+	}
+
 	tmplString := c.String("format")
 	if tmplString != "" {
 		var tmpl *template.Template
@@ -31,7 +36,7 @@ func cmdInspect(c *cli.Context) {
 			log.Fatalf("Template parsing error: %v\n", err)
 		}
 
-		jsonHost, err := json.Marshal(getHost(c))
+		jsonHost, err := json.Marshal(getFirstArgHost(c))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -45,7 +50,7 @@ func cmdInspect(c *cli.Context) {
 		}
 		os.Stdout.Write([]byte{'\n'})
 	} else {
-		prettyJSON, err := json.MarshalIndent(getHost(c), "", "    ")
+		prettyJSON, err := json.MarshalIndent(getFirstArgHost(c), "", "    ")
 		if err != nil {
 			log.Fatal(err)
 		}
