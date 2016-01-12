@@ -17,4 +17,4 @@ deploy:
   file: "bin/*"
   skip_cleanup: true
   on:
-    repo: JohnKDay/machine
+    tags: true
