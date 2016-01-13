@@ -10,10 +10,9 @@ import (
 	azure "github.com/MSOpenTech/azure-sdk-for-go"
 	"github.com/MSOpenTech/azure-sdk-for-go/clients/vmClient"
 
-	"github.com/codegangsta/cli"
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
-	"github.com/docker/machine/libmachine/mcnutils"
+	"github.com/docker/machine/libmachine/mcnflag"
 	"github.com/docker/machine/libmachine/ssh"
 	"github.com/docker/machine/libmachine/state"
 )
@@ -40,69 +39,62 @@ const (
 	defaultSSHUsername     = "ubuntu"
 )
 
-func init() {
-	drivers.Register("azure", &drivers.RegisteredDriver{
-		GetCreateFlags: GetCreateFlags,
-	})
-}
-
 // GetCreateFlags registers the flags this d adds to
 // "docker hosts create"
-func GetCreateFlags() []cli.Flag {
-	return []cli.Flag{
-		cli.IntFlag{
+func (d *Driver) GetCreateFlags() []mcnflag.Flag {
+	return []mcnflag.Flag{
+		mcnflag.IntFlag{
 			Name:  "azure-docker-port",
 			Usage: "Azure Docker port",
 			Value: defaultDockerPort,
 		},
-		cli.IntFlag{
+		mcnflag.IntFlag{
 			Name:  "azure-docker-swarm-master-port",
 			Usage: "Azure Docker Swarm master port",
 			Value: defaultSwarmMasterPort,
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "AZURE_IMAGE",
 			Name:   "azure-image",
 			Usage:  "Azure image name. Default is Ubuntu 14.04 LTS x64",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "AZURE_LOCATION",
 			Name:   "azure-location",
 			Usage:  "Azure location",
 			Value:  defaultLocation,
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			Name:  "azure-password",
 			Usage: "Azure user password",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "AZURE_PUBLISH_SETTINGS_FILE",
 			Name:   "azure-publish-settings-file",
 			Usage:  "Azure publish settings file",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "AZURE_SIZE",
 			Name:   "azure-size",
 			Usage:  "Azure size",
 			Value:  defaultSize,
 		},
-		cli.IntFlag{
+		mcnflag.IntFlag{
 			Name:  "azure-ssh-port",
 			Usage: "Azure SSH port",
 			Value: defaultSSHPort,
 		},
-
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "AZURE_SUBSCRIPTION_CERT",
 			Name:   "azure-subscription-cert",
 			Usage:  "Azure subscription cert",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "AZURE_SUBSCRIPTION_ID",
 			Name:   "azure-subscription-id",
 			Usage:  "Azure subscription ID",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			Name:  "azure-username",
 			Usage: "Azure username",
 			Value: defaultSSHUsername,
@@ -138,6 +130,7 @@ func (d *Driver) GetSSHUsername() string {
 	return d.SSHUser
 }
 
+// DriverName returns the name of the driver
 func (d *Driver) DriverName() string {
 	return "azure"
 }
@@ -169,7 +162,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	}
 
 	if image == "" {
-		d.Image = "b39f27a8b8c64d52b05eac6a62ebad85__Ubuntu-14_04_1-LTS-amd64-server-20140927-en-us-30GB"
+		d.Image = "b39f27a8b8c64d52b05eac6a62ebad85__Ubuntu-15_10-amd64-server-20151116.1-en-us-30GB"
 	} else {
 		d.Image = image
 	}
@@ -186,9 +179,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.DockerPort = flags.Int("azure-docker-port")
 	d.DockerSwarmMasterPort = flags.Int("azure-docker-swarm-master-port")
 	d.SSHPort = flags.Int("azure-ssh-port")
-	d.SwarmMaster = flags.Bool("swarm-master")
-	d.SwarmHost = flags.String("swarm-host")
-	d.SwarmDiscovery = flags.String("swarm-discovery")
+	d.SetSwarmConfigFromFlags(flags)
 
 	return nil
 }
@@ -294,8 +285,6 @@ func (d *Driver) Start() error {
 		return nil
 	}
 
-	log.Debugf("starting %s", d.MachineName)
-
 	if err := vmClient.StartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
 		return err
 	}
@@ -310,84 +299,44 @@ func (d *Driver) Stop() error {
 		return err
 	}
 
-	if vmState, err := d.GetState(); err != nil {
-		return err
-	} else if vmState == state.Stopped {
-		log.Infof("Host is already stopped")
-		return nil
-	}
-
-	log.Debugf("stopping %s", d.MachineName)
-
 	if err := vmClient.ShutdownRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
 		return err
 	}
 
 	d.IPAddress = ""
 	return nil
+}
+
+func (d *Driver) Restart() error {
+	if err := d.setUserSubscription(); err != nil {
+		return err
+	}
+
+	if err := vmClient.RestartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
+		return err
+	}
+
+	var err error
+	d.IPAddress, err = d.GetIP()
+	return err
+}
+
+func (d *Driver) Kill() error {
+	return d.Stop()
 }
 
 func (d *Driver) Remove() error {
 	if err := d.setUserSubscription(); err != nil {
 		return err
 	}
+
 	if available, _, err := vmClient.CheckHostedServiceNameAvailability(d.MachineName); err != nil {
 		return err
 	} else if available {
 		return nil
 	}
 
-	log.Debugf("removing %s", d.MachineName)
-
 	return vmClient.DeleteHostedService(d.MachineName)
-}
-
-func (d *Driver) Restart() error {
-	err := d.setUserSubscription()
-	if err != nil {
-		return err
-	}
-	if vmState, err := d.GetState(); err != nil {
-		return err
-	} else if vmState == state.Stopped {
-		return errors.New("Host is already stopped, use start command to run it")
-	}
-
-	log.Debugf("restarting %s", d.MachineName)
-
-	if err := vmClient.RestartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
-		return err
-	}
-
-	d.IPAddress, err = d.GetIP()
-	return err
-}
-
-func (d *Driver) Kill() error {
-	if err := d.setUserSubscription(); err != nil {
-		return err
-	}
-
-	if vmState, err := d.GetState(); err != nil {
-		return err
-	} else if vmState == state.Stopped {
-		log.Infof("Host is already stopped")
-		return nil
-	}
-
-	log.Debugf("killing %s", d.MachineName)
-
-	if err := vmClient.ShutdownRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
-		return err
-	}
-
-	d.IPAddress = ""
-	return nil
-}
-
-func generateVMName() string {
-	randomID := mcnutils.TruncateID(mcnutils.GenerateRandomID())
-	return fmt.Sprintf("docker-host-%s", randomID)
 }
 
 func (d *Driver) setUserSubscription() error {
@@ -413,13 +362,13 @@ func (d *Driver) addDockerEndpoints(vmConfig *vmClient.Role) error {
 			LocalPort: d.DockerPort,
 		}
 		if d.SwarmMaster {
-			swarm_ep := vmClient.InputEndpoint{
+			swarmEp := vmClient.InputEndpoint{
 				Name:      "docker swarm",
 				Protocol:  "tcp",
 				Port:      d.DockerSwarmMasterPort,
 				LocalPort: d.DockerSwarmMasterPort,
 			}
-			configSets[i].InputEndpoints.InputEndpoint = append(configSets[i].InputEndpoints.InputEndpoint, swarm_ep)
+			configSets[i].InputEndpoints.InputEndpoint = append(configSets[i].InputEndpoints.InputEndpoint, swarmEp)
 			log.Debugf("added Docker swarm master endpoint (port %d) to configuration", d.DockerSwarmMasterPort)
 		}
 		configSets[i].InputEndpoints.InputEndpoint = append(configSets[i].InputEndpoints.InputEndpoint, ep)

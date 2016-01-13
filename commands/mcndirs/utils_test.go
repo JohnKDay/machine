@@ -1,7 +1,6 @@
 package mcndirs
 
 import (
-	"os"
 	"path"
 	"strings"
 	"testing"
@@ -11,6 +10,8 @@ import (
 
 func TestGetBaseDir(t *testing.T) {
 	// reset any override env var
+	BaseDir = ""
+
 	homeDir := mcnutils.GetHomeDir()
 	baseDir := GetBaseDir()
 
@@ -21,27 +22,18 @@ func TestGetBaseDir(t *testing.T) {
 
 func TestGetCustomBaseDir(t *testing.T) {
 	root := "/tmp"
-	os.Setenv("MACHINE_STORAGE_PATH", root)
+	BaseDir = root
 	baseDir := GetBaseDir()
 
 	if strings.Index(baseDir, root) != 0 {
 		t.Fatalf("expected base dir with prefix %s; received %s", root, baseDir)
 	}
-	os.Setenv("MACHINE_STORAGE_PATH", "")
-}
-
-func TestGetDockerDir(t *testing.T) {
-	homeDir := mcnutils.GetHomeDir()
-	baseDir := GetBaseDir()
-
-	if strings.Index(baseDir, homeDir) != 0 {
-		t.Fatalf("expected base dir with prefix %s; received %s", homeDir, baseDir)
-	}
+	BaseDir = ""
 }
 
 func TestGetMachineDir(t *testing.T) {
 	root := "/tmp"
-	os.Setenv("MACHINE_STORAGE_PATH", root)
+	BaseDir = root
 	machineDir := GetMachineDir()
 
 	if strings.Index(machineDir, root) != 0 {
@@ -55,12 +47,12 @@ func TestGetMachineDir(t *testing.T) {
 	if filename != "machines" {
 		t.Fatalf("expected machine dir \"machines\"; received %s", filename)
 	}
-	os.Setenv("MACHINE_STORAGE_PATH", "")
+	BaseDir = ""
 }
 
 func TestGetMachineCertDir(t *testing.T) {
 	root := "/tmp"
-	os.Setenv("MACHINE_STORAGE_PATH", root)
+	BaseDir = root
 	clientDir := GetMachineCertDir()
 
 	if strings.Index(clientDir, root) != 0 {
@@ -74,5 +66,5 @@ func TestGetMachineCertDir(t *testing.T) {
 	if filename != "certs" {
 		t.Fatalf("expected machine client dir \"certs\"; received %s", filename)
 	}
-	os.Setenv("MACHINE_STORAGE_PATH", "")
+	BaseDir = ""
 }

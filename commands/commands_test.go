@@ -1,13 +1,17 @@
 package commands
 
 import (
-	"strings"
+	"errors"
+	"flag"
 	"testing"
 
+	"github.com/codegangsta/cli"
+	"github.com/docker/machine/commands/commandstest"
 	"github.com/docker/machine/drivers/fakedriver"
+	"github.com/docker/machine/libmachine"
+	"github.com/docker/machine/libmachine/crashreport"
 	"github.com/docker/machine/libmachine/host"
 	"github.com/docker/machine/libmachine/hosttest"
-	"github.com/docker/machine/libmachine/persisttest"
 	"github.com/docker/machine/libmachine/state"
 	"github.com/stretchr/testify/assert"
 )
@@ -19,14 +23,14 @@ func TestRunActionForeachMachine(t *testing.T) {
 		{
 			Name:       "foo",
 			DriverName: "fakedriver",
-			Driver: &fakedriver.FakeDriver{
+			Driver: &fakedriver.Driver{
 				MockState: state.Running,
 			},
 		},
 		{
 			Name:       "bar",
 			DriverName: "fakedriver",
-			Driver: &fakedriver.FakeDriver{
+			Driver: &fakedriver.Driver{
 				MockState: state.Stopped,
 			},
 		},
@@ -37,28 +41,28 @@ func TestRunActionForeachMachine(t *testing.T) {
 			// virtualbox...  (to test serial actions)
 			// It's actually FakeDriver!
 			DriverName: "virtualbox",
-			Driver: &fakedriver.FakeDriver{
+			Driver: &fakedriver.Driver{
 				MockState: state.Stopped,
 			},
 		},
 		{
 			Name:       "spam",
 			DriverName: "virtualbox",
-			Driver: &fakedriver.FakeDriver{
+			Driver: &fakedriver.Driver{
 				MockState: state.Running,
 			},
 		},
 		{
 			Name:       "eggs",
 			DriverName: "fakedriver",
-			Driver: &fakedriver.FakeDriver{
+			Driver: &fakedriver.Driver{
 				MockState: state.Stopped,
 			},
 		},
 		{
 			Name:       "ham",
 			DriverName: "fakedriver",
-			Driver: &fakedriver.FakeDriver{
+			Driver: &fakedriver.Driver{
 				MockState: state.Running,
 			},
 		},
@@ -66,64 +70,124 @@ func TestRunActionForeachMachine(t *testing.T) {
 
 	runActionForeachMachine("start", machines)
 
-	expected := map[string]state.State{
-		"foo":  state.Running,
-		"bar":  state.Running,
-		"baz":  state.Running,
-		"spam": state.Running,
-		"eggs": state.Running,
-		"ham":  state.Running,
-	}
-
 	for _, machine := range machines {
-		state, _ := machine.Driver.GetState()
-		if expected[machine.Name] != state {
-			t.Fatalf("Expected machine %s to have state %s, got state %s", machine.Name, state, expected[machine.Name])
-		}
-	}
+		machineState, _ := machine.Driver.GetState()
 
-	// OK, now let's stop them all!
-	expected = map[string]state.State{
-		"foo":  state.Stopped,
-		"bar":  state.Stopped,
-		"baz":  state.Stopped,
-		"spam": state.Stopped,
-		"eggs": state.Stopped,
-		"ham":  state.Stopped,
+		assert.Equal(t, state.Running, machineState)
 	}
 
 	runActionForeachMachine("stop", machines)
 
 	for _, machine := range machines {
-		state, _ := machine.Driver.GetState()
-		if expected[machine.Name] != state {
-			t.Fatalf("Expected machine %s to have state %s, got state %s", machine.Name, state, expected[machine.Name])
-		}
+		machineState, _ := machine.Driver.GetState()
+
+		assert.Equal(t, state.Stopped, machineState)
 	}
 }
 
 func TestPrintIPEmptyGivenLocalEngine(t *testing.T) {
-	defer persisttest.Cleanup()
+	stdoutGetter := commandstest.NewStdoutGetter()
+	defer stdoutGetter.Stop()
+
 	host, _ := hosttest.GetDefaultTestHost()
+	err := printIP(host)()
 
-	out, w := captureStdout()
-
-	assert.Nil(t, printIP(host)())
-	w.Close()
-
-	assert.Equal(t, "", strings.TrimSpace(<-out))
+	assert.NoError(t, err)
+	assert.Equal(t, "\n", stdoutGetter.Output())
 }
 
 func TestPrintIPPrintsGivenRemoteEngine(t *testing.T) {
-	defer cleanup()
+	stdoutGetter := commandstest.NewStdoutGetter()
+	defer stdoutGetter.Stop()
+
 	host, _ := hosttest.GetDefaultTestHost()
-	host.Driver = &fakedriver.FakeDriver{}
+	host.Driver = &fakedriver.Driver{
+		MockState: state.Running,
+		MockIP:    "1.2.3.4",
+	}
+	err := printIP(host)()
 
-	out, w := captureStdout()
+	assert.NoError(t, err)
+	assert.Equal(t, "1.2.3.4\n", stdoutGetter.Output())
+}
 
-	assert.Nil(t, printIP(host)())
+func TestConsolidateError(t *testing.T) {
+	cases := []struct {
+		inputErrs   []error
+		expectedErr error
+	}{
+		{
+			inputErrs: []error{
+				errors.New("Couldn't remove host 'bar'"),
+			},
+			expectedErr: errors.New("Couldn't remove host 'bar'"),
+		},
+		{
+			inputErrs: []error{
+				errors.New("Couldn't remove host 'bar'"),
+				errors.New("Couldn't remove host 'foo'"),
+			},
+			expectedErr: errors.New("Couldn't remove host 'bar'\nCouldn't remove host 'foo'"),
+		},
+	}
 
-	w.Close()
+	for _, c := range cases {
+		assert.Equal(t, c.expectedErr, consolidateErrs(c.inputErrs))
+	}
+}
 
-	assert.Equal(t, "1.2.3.4", strings.TrimSpace(<-out))
+type MockCrashReporter struct {
+	sent bool
+}
+
+func (m *MockCrashReporter) Send(err crashreport.CrashError) error {
+	m.sent = true
+	return nil
+}
+
+func TestSendCrashReport(t *testing.T) {
+	defer func(fnOsExit func(code int)) { osExit = fnOsExit }(osExit)
+	osExit = func(code int) {}
+
+	defer func(factory func(baseDir string, apiKey string) crashreport.CrashReporter) {
+		crashreport.NewCrashReporter = factory
+	}(crashreport.NewCrashReporter)
+
+	tests := []struct {
+		description string
+		err         error
+		sent        bool
+	}{
+		{
+			description: "Should send crash error",
+			err: crashreport.CrashError{
+				Cause:      errors.New("BUG"),
+				Command:    "command",
+				Context:    "context",
+				DriverName: "virtualbox",
+			},
+			sent: true,
+		},
+		{
+			description: "Should not send standard error",
+			err:         errors.New("BUG"),
+			sent:        false,
+		},
+	}
+
+	for _, test := range tests {
+		mockCrashReporter := &MockCrashReporter{}
+		crashreport.NewCrashReporter = func(baseDir string, apiKey string) crashreport.CrashReporter {
+			return mockCrashReporter
+		}
+
+		command := func(commandLine CommandLine, api libmachine.API) error {
+			return test.err
+		}
+
+		context := cli.NewContext(cli.NewApp(), &flag.FlagSet{}, nil)
+		runCommand(command)(context)
+
+		assert.Equal(t, test.sent, mockCrashReporter.sent, test.description)
+	}
 }

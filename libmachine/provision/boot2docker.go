@@ -2,6 +2,7 @@ package provision
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"path"
@@ -35,24 +36,36 @@ func NewBoot2DockerProvisioner(d drivers.Driver) Provisioner {
 type Boot2DockerProvisioner struct {
 	OsReleaseInfo *OsRelease
 	Driver        drivers.Driver
-	AuthOptions   auth.AuthOptions
-	EngineOptions engine.EngineOptions
-	SwarmOptions  swarm.SwarmOptions
+	AuthOptions   auth.Options
+	EngineOptions engine.Options
+	SwarmOptions  swarm.Options
+}
+
+func (provisioner *Boot2DockerProvisioner) String() string {
+	return "boot2docker"
 }
 
 func (provisioner *Boot2DockerProvisioner) Service(name string, action serviceaction.ServiceAction) error {
-	var (
-		err error
-	)
-
-	if _, err = provisioner.SSHCommand(fmt.Sprintf("sudo /etc/init.d/%s %s", name, action.String())); err != nil {
-		return err
-	}
-
-	return nil
+	_, err := provisioner.SSHCommand(fmt.Sprintf("sudo /etc/init.d/%s %s", name, action.String()))
+	return err
 }
 
 func (provisioner *Boot2DockerProvisioner) upgradeIso() error {
+	// TODO: Ideally, we should not read from mcndirs directory at all.
+	// The driver should be able to communicate how and where to place the
+	// relevant files.
+	b2dutils := mcnutils.NewB2dUtils(mcndirs.GetBaseDir())
+
+	// Check if the driver has specified a custom b2d url
+	jsonDriver, err := json.Marshal(provisioner.GetDriver())
+	if err != nil {
+		return err
+	}
+	var d struct {
+		Boot2DockerURL string
+	}
+	json.Unmarshal(jsonDriver, &d)
+
 	log.Info("Stopping machine to do the upgrade...")
 
 	if err := provisioner.Driver.Stop(); err != nil {
@@ -65,21 +78,11 @@ func (provisioner *Boot2DockerProvisioner) upgradeIso() error {
 
 	machineName := provisioner.GetDriver().GetMachineName()
 
-	log.Infof("Upgrading machine %s...", machineName)
+	log.Infof("Upgrading machine %q...", machineName)
 
-	// TODO: Ideally, we should not read from mcndirs directory at all.
-	// The driver should be able to communicate how and where to place the
-	// relevant files.
-	b2dutils := mcnutils.NewB2dUtils("", "", mcndirs.GetBaseDir())
-
-	// Usually we call this implicitly, but call it here explicitly to get
-	// the latest boot2docker ISO.
-	if err := b2dutils.DownloadLatestBoot2Docker(); err != nil {
-		return err
-	}
-
-	// Copy the latest version of boot2docker ISO to the machine's directory
-	if err := b2dutils.CopyIsoToMachineDir("", machineName); err != nil {
+	// Either download the latest version of the b2d url that was explicitly
+	// specified when creating the VM or copy the (updated) default ISO
+	if err := b2dutils.CopyIsoToMachineDir(d.Boot2DockerURL, machineName); err != nil {
 		return err
 	}
 
@@ -121,7 +124,7 @@ func (provisioner *Boot2DockerProvisioner) GetDockerOptionsDir() string {
 	return "/var/lib/boot2docker"
 }
 
-func (provisioner *Boot2DockerProvisioner) GetAuthOptions() auth.AuthOptions {
+func (provisioner *Boot2DockerProvisioner) GetAuthOptions() auth.Options {
 	return provisioner.AuthOptions
 }
 
@@ -172,7 +175,7 @@ SERVERCERT={{.AuthOptions.ServerCertRemotePath}}
 }
 
 func (provisioner *Boot2DockerProvisioner) CompatibleWithHost() bool {
-	return provisioner.OsReleaseInfo.Id == "boot2docker"
+	return provisioner.OsReleaseInfo.ID == "boot2docker"
 }
 
 func (provisioner *Boot2DockerProvisioner) SetOsReleaseInfo(info *OsRelease) {
@@ -183,19 +186,15 @@ func (provisioner *Boot2DockerProvisioner) GetOsReleaseInfo() (*OsRelease, error
 	return provisioner.OsReleaseInfo, nil
 }
 
-func (provisioner *Boot2DockerProvisioner) Provision(swarmOptions swarm.SwarmOptions, authOptions auth.AuthOptions, engineOptions engine.EngineOptions) error {
-	const (
-		dockerPort = 2376
-	)
+func (provisioner *Boot2DockerProvisioner) AttemptIPContact(dockerPort int) {
+	ip, err := provisioner.Driver.GetIP()
+	if err != nil {
+		log.Warnf("Could not get IP address for created machine: %s", err)
+		return
+	}
 
-	defer func() {
-		ip, err := provisioner.Driver.GetIP()
-		if err != nil {
-			log.Fatalf("Could not get IP address for created machine: %s", err)
-		}
-
-		if conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, dockerPort), 5*time.Second); err != nil {
-			log.Warn(`
+	if conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, dockerPort), 5*time.Second); err != nil {
+		log.Warn(`
 This machine has been allocated an IP address, but Docker Machine could not
 reach it successfully.
 
@@ -207,41 +206,56 @@ You may need to add the route manually, or use another related workaround.
 This could be due to a VPN, proxy, or host file configuration issue.
 
 You also might want to clear any VirtualBox host only interfaces you are not using.`)
-			log.Fatal(err)
-		} else {
-			conn.Close()
+	} else {
+		conn.Close()
+	}
+}
+
+func (provisioner *Boot2DockerProvisioner) Provision(swarmOptions swarm.Options, authOptions auth.Options, engineOptions engine.Options) error {
+	const (
+		dockerPort = 2376
+	)
+
+	var (
+		err error
+	)
+
+	defer func() {
+		if err == nil {
+			provisioner.AttemptIPContact(dockerPort)
 		}
 	}()
 
 	provisioner.SwarmOptions = swarmOptions
 	provisioner.AuthOptions = authOptions
 	provisioner.EngineOptions = engineOptions
+	swarmOptions.Env = engineOptions.Env
 
 	if provisioner.EngineOptions.StorageDriver == "" {
 		provisioner.EngineOptions.StorageDriver = "aufs"
 	}
 
-	if err := provisioner.SetHostname(provisioner.Driver.GetMachineName()); err != nil {
+	if err = provisioner.SetHostname(provisioner.Driver.GetMachineName()); err != nil {
 		return err
 	}
 
 	// b2d hosts need to wait for the daemon to be up
 	// before continuing with provisioning
-	if err := waitForDocker(provisioner, dockerPort); err != nil {
+	if err = waitForDocker(provisioner, dockerPort); err != nil {
 		return err
 	}
 
-	if err := makeDockerOptionsDir(provisioner); err != nil {
+	if err = makeDockerOptionsDir(provisioner); err != nil {
 		return err
 	}
 
 	provisioner.AuthOptions = setRemoteAuthOptions(provisioner)
 
-	if err := ConfigureAuth(provisioner); err != nil {
+	if err = ConfigureAuth(provisioner); err != nil {
 		return err
 	}
 
-	if err := configureSwarm(provisioner, swarmOptions, provisioner.AuthOptions); err != nil {
+	if err = configureSwarm(provisioner, swarmOptions, provisioner.AuthOptions); err != nil {
 		return err
 	}
 

@@ -7,16 +7,15 @@ import (
 	"github.com/docker/machine/libmachine/mcnutils"
 )
 
-func GetBaseDir() string {
-	baseDir := os.Getenv("MACHINE_STORAGE_PATH")
-	if baseDir == "" {
-		baseDir = filepath.Join(mcnutils.GetHomeDir(), ".docker", "machine")
-	}
-	return baseDir
-}
+var (
+	BaseDir = os.Getenv("MACHINE_STORAGE_PATH")
+)
 
-func GetDockerDir() string {
-	return filepath.Join(mcnutils.GetHomeDir(), ".docker")
+func GetBaseDir() string {
+	if BaseDir == "" {
+		BaseDir = filepath.Join(mcnutils.GetHomeDir(), ".docker", "machine")
+	}
+	return BaseDir
 }
 
 func GetMachineDir() string {
@@ -25,8 +24,4 @@ func GetMachineDir() string {
 
 func GetMachineCertDir() string {
 	return filepath.Join(GetBaseDir(), "certs")
-}
-
-func GetMachineCacheDir() string {
-	return filepath.Join(GetBaseDir(), "cache")
 }

@@ -16,7 +16,7 @@ import (
 
 type Client interface {
 	Output(command string) (string, error)
-	Shell() error
+	Shell(args ...string) error
 }
 
 type ExternalClient struct {
@@ -35,33 +35,33 @@ type Auth struct {
 	Keys      []string
 }
 
-type SSHClientType string
+type ClientType string
 
 const (
 	maxDialAttempts = 10
 )
 
 const (
-	External SSHClientType = "external"
-	Native   SSHClientType = "native"
+	External ClientType = "external"
+	Native   ClientType = "native"
 )
 
 var (
 	baseSSHArgs = []string{
+		"-o", "BatchMode=yes",
 		"-o", "PasswordAuthentication=no",
-		"-o", "IdentitiesOnly=yes",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=quiet", // suppress "Warning: Permanently added '[localhost]:2022' (ECDSA) to the list of known hosts."
 		"-o", "ConnectionAttempts=3", // retry 3 times if SSH connection fails
 		"-o", "ConnectTimeout=10", // timeout after 10 seconds
 		"-o", "ControlMaster=no", // disable ssh multiplexing
-		"-o", "ControlPath=no",
+		"-o", "ControlPath=none",
 	}
-	defaultClientType SSHClientType = External
+	defaultClientType = External
 )
 
-func SetDefaultClient(clientType SSHClientType) {
+func SetDefaultClient(clientType ClientType) {
 	// Allow over-riding of default client type, so that even if ssh binary
 	// is found in PATH we can still use the Go native implementation if
 	// desired.
@@ -77,16 +77,22 @@ func NewClient(user string, host string, port int, auth *Auth) (Client, error) {
 	sshBinaryPath, err := exec.LookPath("ssh")
 	if err != nil {
 		log.Debug("SSH binary not found, using native Go implementation")
-		return NewNativeClient(user, host, port, auth)
+		client, err := NewNativeClient(user, host, port, auth)
+		log.Debug(client)
+		return client, err
 	}
 
 	if defaultClientType == Native {
 		log.Debug("Using SSH client type: native")
-		return NewNativeClient(user, host, port, auth)
+		client, err := NewNativeClient(user, host, port, auth)
+		log.Debug(client)
+		return client, err
 	}
 
 	log.Debug("Using SSH client type: external")
-	return NewExternalClient(sshBinaryPath, user, host, port, auth)
+	client, err := NewExternalClient(sshBinaryPath, user, host, port, auth)
+	log.Debug(client)
+	return client, err
 }
 
 func NewNativeClient(user, host string, port int, auth *Auth) (Client, error) {
@@ -195,7 +201,7 @@ func (client NativeClient) OutputWithPty(command string) (string, error) {
 	return string(output), err
 }
 
-func (client NativeClient) Shell() error {
+func (client NativeClient) Shell(args ...string) error {
 	var (
 		termWidth, termHeight int
 	)
@@ -243,11 +249,14 @@ func (client NativeClient) Shell() error {
 		return err
 	}
 
-	if err := session.Shell(); err != nil {
-		return err
+	if len(args) == 0 {
+		if err := session.Shell(); err != nil {
+			return err
+		}
+		session.Wait()
+	} else {
+		session.Run(strings.Join(args, " "))
 	}
-
-	session.Wait()
 
 	return nil
 }
@@ -259,9 +268,17 @@ func NewExternalClient(sshBinaryPath, user, host string, port int, auth *Auth) (
 
 	args := append(baseSSHArgs, fmt.Sprintf("%s@%s", user, host))
 
+	// If no identities are explicitly provided, also look at the identities
+	// offered by ssh-agent
+	if len(auth.Keys) > 0 {
+		args = append(args, "-o", "IdentitiesOnly=yes")
+	}
+
 	// Specify which private keys to use to authorize the SSH request.
 	for _, privateKeyPath := range auth.Keys {
-		args = append(args, "-i", privateKeyPath)
+		if privateKeyPath != "" {
+			args = append(args, "-i", privateKeyPath)
+		}
 	}
 
 	// Set which port to use for SSH.
@@ -272,23 +289,21 @@ func NewExternalClient(sshBinaryPath, user, host string, port int, auth *Auth) (
 	return client, nil
 }
 
+func getSSHCmd(binaryPath string, args ...string) *exec.Cmd {
+	return exec.Command(binaryPath, args...)
+}
+
 func (client ExternalClient) Output(command string) (string, error) {
-	// TODO: Ugh, gross hack.  Replace with all instances using variadic
-	// syntax
-	args := append(client.BaseArgs, strings.Split(command, " ")...)
-
-	cmd := exec.Command(client.BinaryPath, args...)
-	log.Debug(cmd)
-
-	// Allow piping of local things to remote commands.
-	cmd.Stdin = os.Stdin
-
+	args := append(client.BaseArgs, command)
+	cmd := getSSHCmd(client.BinaryPath, args...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
 
-func (client ExternalClient) Shell() error {
-	cmd := exec.Command(client.BinaryPath, client.BaseArgs...)
+func (client ExternalClient) Shell(args ...string) error {
+	args = append(client.BaseArgs, args...)
+	cmd := getSSHCmd(client.BinaryPath, args...)
+
 	log.Debug(cmd)
 
 	cmd.Stdin = os.Stdin

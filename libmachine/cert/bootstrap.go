@@ -1,6 +1,8 @@
 package cert
 
 import (
+	"errors"
+	"fmt"
 	"os"
 
 	"github.com/docker/machine/libmachine/auth"
@@ -8,7 +10,7 @@ import (
 	"github.com/docker/machine/libmachine/mcnutils"
 )
 
-func BootstrapCertificates(authOptions *auth.AuthOptions) error {
+func BootstrapCertificates(authOptions *auth.Options) error {
 	certDir := authOptions.CertDir
 	caCertPath := authOptions.CaCertPath
 	caPrivateKeyPath := authOptions.CaPrivateKeyPath
@@ -18,17 +20,18 @@ func BootstrapCertificates(authOptions *auth.AuthOptions) error {
 	// TODO: I'm not super happy about this use of "org", the user should
 	// have to specify it explicitly instead of implicitly basing it on
 	// $USER.
-	org := mcnutils.GetUsername()
+	caOrg := mcnutils.GetUsername()
+	org := caOrg + ".<bootstrap>"
 
 	bits := 2048
 
 	if _, err := os.Stat(certDir); err != nil {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(certDir, 0700); err != nil {
-				log.Fatalf("Error creating machine certificate dir: %s", err)
+				return fmt.Errorf("Creating machine certificate dir failed: %s", err)
 			}
 		} else {
-			log.Fatal(err)
+			return err
 		}
 	}
 
@@ -37,11 +40,11 @@ func BootstrapCertificates(authOptions *auth.AuthOptions) error {
 
 		// check if the key path exists; if so, error
 		if _, err := os.Stat(caPrivateKeyPath); err == nil {
-			log.Fatalf("The CA key already exists.  Please remove it or specify a different key/cert.")
+			return errors.New("The CA key already exists.  Please remove it or specify a different key/cert.")
 		}
 
-		if err := GenerateCACertificate(caCertPath, caPrivateKeyPath, org, bits); err != nil {
-			log.Infof("Error generating CA certificate: %s", err)
+		if err := GenerateCACertificate(caCertPath, caPrivateKeyPath, caOrg, bits); err != nil {
+			return fmt.Errorf("Generating CA certificate failed: %s", err)
 		}
 	}
 
@@ -51,20 +54,20 @@ func BootstrapCertificates(authOptions *auth.AuthOptions) error {
 		if _, err := os.Stat(certDir); err != nil {
 			if os.IsNotExist(err) {
 				if err := os.Mkdir(certDir, 0700); err != nil {
-					log.Fatalf("Error creating machine client cert dir: %s", err)
+					return fmt.Errorf("Creating machine client cert dir failed: %s", err)
 				}
 			} else {
-				log.Fatal(err)
+				return err
 			}
 		}
 
 		// check if the key path exists; if so, error
 		if _, err := os.Stat(clientKeyPath); err == nil {
-			log.Fatalf("The client key already exists.  Please remove it or specify a different key/cert.")
+			return errors.New("The client key already exists.  Please remove it or specify a different key/cert.")
 		}
 
 		if err := GenerateCert([]string{""}, clientCertPath, clientKeyPath, caCertPath, caPrivateKeyPath, org, bits); err != nil {
-			log.Fatalf("Error generating client certificate: %s", err)
+			return fmt.Errorf("Generating client certificate failed: %s", err)
 		}
 	}
 

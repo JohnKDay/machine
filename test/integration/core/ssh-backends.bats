@@ -2,12 +2,7 @@
 
 load ${BASE_TEST_DIR}/helpers.bash
 
-# Basic smoke test for SSH backends
-
-@test "$DRIVER: create SSH test box" {
-  run machine create -d $DRIVER $NAME
-  [[ "$status" -eq 0  ]]
-}
+use_shared_machine
 
 @test "$DRIVER: test external ssh backend" {
   run machine ssh $NAME df -h
@@ -26,7 +21,7 @@ load ${BASE_TEST_DIR}/helpers.bash
 
 @test "$DRIVER: test command did what it purported to -- native ssh" {
   run machine --native-ssh ssh $NAME echo foo
-  [[ "$output" == "foo"  ]]
+  [[ "$output" =~ "foo"  ]]
 }
 
 @test "$DRIVER: ensure that ssh extra arguments work" {

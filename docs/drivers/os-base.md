@@ -28,7 +28,7 @@ $ docker-machine create -d azure --azure-subscription-id="SUB_ID" --azure-subscr
 ```
 
 To see a list of providers and review the options available to a provider, see
-the [Docker Machine driver reference](/drivers).
+the [Docker Machine driver reference](../index.md).
 
 In addition to the provider, you have the option of identifying a base operating
 system. It is an option because Docker Machine has defaults for both local and
@@ -36,15 +36,15 @@ remote providers. For local providers such as VirtualBox, Fusion, Hyper-V, and
 so forth, the default base operating system is Boot2Docker. For cloud providers,
 the base operating system is the latest Ubuntu LTS the provider supports.
 
-| Operating System           | Version          | Notes                   |
-|----------------------------|------------------|-------------------------|
-| Boot2Docker                | 1.5+             | default for local       |
-| Ubuntu                     | 12.04+           | default for remote      |
-| RancherOS                  | 0.3+             |                         |
-| Debian                     | 8.0+             | experimental            |
-| RedHat Enterprise Linux    | 7.0+             | experimental            |
-| CentOS                     | 7+               | experimental            |
-| Fedora                     | 21+              | experimental            |
+| Operating System        | Version | Notes              |
+| ----------------------- | ------- | ------------------ |
+| Boot2Docker             | 1.5+    | default for local  |
+| Ubuntu                  | 12.04+  | default for remote |
+| RancherOS               | 0.3+    |                    |
+| Debian                  | 8.0+    | experimental       |
+| RedHat Enterprise Linux | 7.0+    | experimental       |
+| CentOS                  | 7+      | experimental       |
+| Fedora                  | 21+     | experimental       |
 
 To use a different base operating system on a remote provider, specify the
 provider's image flag and one of its available images. For example, to select a

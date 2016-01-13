@@ -14,25 +14,39 @@ Docker does things, you'll feel right at home.
 Otherwise, please read [Docker's contributions
 guidelines](https://github.com/docker/docker/blob/master/CONTRIBUTING.md).
 
-# Building using docker
+# Building
 
 The requirements to build Machine are:
 
-1. A running instance of Docker (or alternatively a golang 1.5 development environment)
-2. The `bash` shell
-3. [Make](https://www.gnu.org/software/make/)
+1.  A running instance of Docker or a Golang 1.5.2 development environment
+2.  The `bash` shell
+3.  [Make](https://www.gnu.org/software/make/)
 
-Call `export USE_CONTAINER=true` to instruct the build system to use containers to build.
-If you want to build natively using golang instead, don't set this variable.
+## Build using Docker containers
 
-## Building
+To build the `docker-machine` binary using containers, simply run:
 
-To build the docker-machine binary, simply run:
+    $ export USE_CONTAINER=true
+    $ make build
 
-    $ make
+## Local Go development environment
 
-From the Machine repository's root. You will now find a `docker-machine`
-binary at the root of the project.
+Make sure the source code directory is under a correct directory structure to use Go 1.5 vendoring;
+example of cloning and preparing the correct environment `GOPATH`:
+
+        mkdir docker-machine
+        cd docker-machine
+        export GOPATH="$PWD"
+        go get github.com/docker/machine
+        cd src/github.com/docker/machine
+
+At this point, simply run:
+
+    $ make build
+
+## Built binary
+
+After the build is complete a `bin/docker-machine` binary will be created.
 
 You may call:
 
@@ -41,6 +55,9 @@ You may call:
 to clean-up build results.
 
 ## Tests and validation
+
+We use the usual `go` tools for this, to run those commands you need at least the linter which you can
+install with `go get -u github.com/golang/lint/golint`
 
 To run basic validation (dco, fmt), and the project unit tests, call:
 
@@ -59,7 +76,9 @@ To generate an html code coverage report of the Machine codebase, run:
 
     make coverage-serve
 
-And navigate to http://localhost:8000 (hit `CTRL+C` to stop the server).
+And navigate to <http://localhost:8000> (hit `CTRL+C` to stop the server).
+
+### Native build
 
 Alternatively, if you are building natively, you can simply run:
 
@@ -78,17 +97,13 @@ This will generate and open the report file:
     make test
     make validate
 
-### Build targets
+### Advanced build targets
 
-Build a single, native machine binary:
-
-    make build-simple
-
-Build for all supported oses and architectures (binaries will be in the `bin` project subfolder):
+Build for all supported OSes and architectures (binaries will be in the `bin` project subfolder):
 
     make build-x
 
-Build for a specific list of oses and architectures:
+Build for a specific list of OSes and architectures:
 
     TARGET_OS=linux TARGET_ARCH="amd64 arm" make build-x
 
@@ -97,8 +112,7 @@ You can further control build options through the following environment variable
     DEBUG=true # enable debug build
     STATIC=true # build static (note: when cross-compiling, the build is always static)
     VERBOSE=true # verbose output
-    PARALLEL=X # lets you control build parallelism when cross-compiling multiple builds
-    PREFIX=folder
+    PREFIX=folder # put binaries in another folder (not the default `./bin`)
 
 Scrub build results:
 
@@ -125,6 +139,11 @@ Scrub build results:
     make lint
     make dco
 
+### Save and restore dependencies
+
+    make dep-save
+    make dep-restore
+
 ## Integration Tests
 
 ### Setup
@@ -134,16 +153,12 @@ first make sure to [install it](https://github.com/sstephenson/bats#installing-b
 
 ### Basic Usage
 
-Integration tests can be invoked calling `make test-integration`.
+You first need to build, calling `make build`.
 
-:warn: you cannot run integration test inside a container for now.
-Be sure to unset the `USE_CONTAINER` env variable if you set it earlier, or alternatively
-call directly `./test/integration/run-bats.sh` instead of `make test-integration`.
+You can then invoke integration tests calling `DRIVER=foo make test-integration TESTSUITE`, where `TESTSUITE` is
+one of the `test/integration` subfolder, and `foo` is the specific driver you want to test.
 
-You can invoke a test or subset of tests for a particular driver.
-To set the driver, use the `DRIVER` environment variable.
-
-To invoke just one test:
+Examples:
 
 ```console
 $ DRIVER=virtualbox make test-integration test/integration/core/core-commands.bats
@@ -170,13 +185,6 @@ Cleaning up machines...
 Successfully removed bats-virtualbox-test
 ```
 
-To invoke a shared test with a different driver:
-
-```console
-$ DRIVER=digitalocean make test-integration test/integration/core/core-commands.bats
-...
-```
-
 To invoke a directory of tests recursively:
 
 ```console
@@ -194,15 +202,13 @@ Keep in mind that Machine supports environment variables for many of these
 flags.  So, for instance, you could run the command (substituting, of course,
 the proper secrets):
 
-```
-$ DRIVER=amazonec2 \
-  AWS_VPC_ID=vpc-xxxxxxx \
-  AWS_SECRET_ACCESS_KEY=yyyyyyyyyyyyy \
-  AWS_ACCESS_KEY_ID=zzzzzzzzzzzzzzzz \
-  AWS_AMI=ami-12663b7a \
-  AWS_SSH_USER=ec2-user \
-  make test-integration test/integration/core
-```
+    $ DRIVER=amazonec2 \
+      AWS_VPC_ID=vpc-xxxxxxx \
+      AWS_SECRET_ACCESS_KEY=yyyyyyyyyyyyy \
+      AWS_ACCESS_KEY_ID=zzzzzzzzzzzzzzzz \
+      AWS_AMI=ami-12663b7a \
+      AWS_SSH_USER=ec2-user \
+      make test-integration test/integration/core
 
 in order to run the core tests on Red Hat Enterprise Linux on Amazon.
 
@@ -214,11 +220,11 @@ guide you.
 
 At the time of writing, there is:
 
-1. A `core` directory which contains tests that are applicable to all drivers.
-2. A `drivers` directory which contains tests that are applicable only to
-specific drivers with sub-directories for each provider.
-3. A `cli` directory which is meant for testing functionality of the command
-line interface, without much regard for driver-specific details.
+1.  A `core` directory which contains tests that are applicable to all drivers.
+2.  A `drivers` directory which contains tests that are applicable only to
+    specific drivers with sub-directories for each provider.
+3.  A `cli` directory which is meant for testing functionality of the command
+    line interface, without much regard for driver-specific details.
 
 ### Guidelines
 
@@ -227,15 +233,15 @@ work in progress, but here are some general guidelines from the maintainers:
 
 1.  Ideally, each test file should have only one concern.
 2.  Tests generally should not spin up more than one machine unless the test is
-deliberately testing something which involves multiple machines, such as an `ls`
-test which involves several machines, or a test intended to create and check
-some property of a Swarm cluster.
+    deliberately testing something which involves multiple machines, such as an `ls`
+    test which involves several machines, or a test intended to create and check
+    some property of a Swarm cluster.
 3.  BATS will print the output of commands executed during a test if the test
-fails.  This can be useful, for instance to dump the magic `$output` variable
-that BATS provides and/or to get debugging information.
+    fails.  This can be useful, for instance to dump the magic `$output` variable
+    that BATS provides and/or to get debugging information.
 4.  It is not strictly needed to clean up the machines as part of the test.  The
-BATS wrapper script has a hook to take care of cleaning up all created machines
-after each test.
+    BATS wrapper script has a hook to take care of cleaning up all created machines
+    after each test.
 
 # Drivers
 
@@ -243,11 +249,11 @@ Docker Machine has several included drivers that supports provisioning hosts
 in various providers.  If you wish to contribute a driver, we ask the following
 to ensure we keep the driver in a consistent and stable state:
 
-- Address issues filed against this driver in a timely manner
-- Review PRs for the driver
-- Be responsible for maintaining the infrastructure to run unit tests
-and integration tests on the new supported environment
-- Participate in a weekly driver maintainer meeting
+-   Address issues filed against this driver in a timely manner
+-   Review PRs for the driver
+-   Be responsible for maintaining the infrastructure to run unit tests
+    and integration tests on the new supported environment
+-   Participate in a weekly driver maintainer meeting
 
 If you can commit to those, the next step is to make sure the driver adheres
 to the [spec](https://github.com/docker/machine/blob/master/docs/DRIVER_SPEC.md).

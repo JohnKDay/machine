@@ -1,12 +1,7 @@
 package commands
 
-import (
-	"github.com/codegangsta/cli"
-	"github.com/docker/machine/libmachine/log"
-)
+import "github.com/docker/machine/libmachine"
 
-func cmdIp(c *cli.Context) {
-	if err := runActionWithContext("ip", c); err != nil {
-		log.Fatal(err)
-	}
+func cmdIP(c CommandLine, api libmachine.API) error {
+	return runAction("ip", c, api)
 }

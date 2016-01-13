@@ -1,12 +1,13 @@
-FROM golang:1.5
+FROM golang:1.5.2
 
-RUN go get  github.com/mitchellh/gox \
-            github.com/golang/lint/golint \
+RUN go get  github.com/golang/lint/golint \
             github.com/mattn/goveralls \
             golang.org/x/tools/cover \
             github.com/tools/godep \
             github.com/aktau/github-release
 
+ENV USER root
 WORKDIR /go/src/github.com/docker/machine
 
 ADD . /go/src/github.com/docker/machine
+RUN mkdir bin

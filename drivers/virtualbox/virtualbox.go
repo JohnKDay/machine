@@ -1,12 +1,10 @@
 package virtualbox
 
 import (
-	"archive/tar"
-	"bytes"
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"os"
@@ -18,16 +16,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codegangsta/cli"
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
+	"github.com/docker/machine/libmachine/mcnflag"
 	"github.com/docker/machine/libmachine/mcnutils"
 	"github.com/docker/machine/libmachine/ssh"
 	"github.com/docker/machine/libmachine/state"
 )
 
 const (
-	isoFilename                = "boot2docker.iso"
 	defaultCPU                 = 1
 	defaultMemory              = 1024
 	defaultBoot2DockerURL      = ""
@@ -35,35 +32,37 @@ const (
 	defaultHostOnlyCIDR        = "192.168.99.1/24"
 	defaultHostOnlyNictype     = "82540EM"
 	defaultHostOnlyPromiscMode = "deny"
-	defaultNoShare             = false
 	defaultDiskSize            = 20000
 )
 
 var (
 	ErrUnableToGenerateRandomIP = errors.New("unable to generate random IP")
+	ErrMustEnableVTX            = errors.New("This computer doesn't have VT-X/AMD-v enabled. Enabling it in the BIOS is mandatory")
+	ErrNotCompatibleWithHyperV  = errors.New("This computer has Hyper-V installed. VirtualBox refuses to boot a 64bits VM when Hyper-V is installed. See https://www.virtualbox.org/ticket/12350")
+	ErrNetworkAddrCidr          = errors.New("host-only cidr must be specified with a host address, not a network address")
 )
 
 type Driver struct {
+	VBoxManager
 	*drivers.BaseDriver
 	CPU                 int
 	Memory              int
 	DiskSize            int
 	Boot2DockerURL      string
 	Boot2DockerImportVM string
+	HostDNSResolver     bool
 	HostOnlyCIDR        string
 	HostOnlyNicType     string
 	HostOnlyPromiscMode string
 	NoShare             bool
+	DNSProxy            bool
+	NoVTXCheck          bool
 }
 
-func init() {
-	drivers.Register("virtualbox", &drivers.RegisteredDriver{
-		GetCreateFlags: GetCreateFlags,
-	})
-}
-
+// NewDriver creates a new VirtualBox driver with default settings.
 func NewDriver(hostName, storePath string) *Driver {
 	return &Driver{
+		VBoxManager: NewVBoxManager(),
 		BaseDriver: &drivers.BaseDriver{
 			MachineName: hostName,
 			StorePath:   storePath,
@@ -77,60 +76,77 @@ func NewDriver(hostName, storePath string) *Driver {
 	}
 }
 
-// RegisterCreateFlags registers the flags this driver adds to
+// GetCreateFlags registers the flags this driver adds to
 // "docker hosts create"
-func GetCreateFlags() []cli.Flag {
-	return []cli.Flag{
-		cli.IntFlag{
-			EnvVar: "VIRTUALBOX_MEMORY_SIZE",
+func (d *Driver) GetCreateFlags() []mcnflag.Flag {
+	return []mcnflag.Flag{
+		mcnflag.IntFlag{
 			Name:   "virtualbox-memory",
 			Usage:  "Size of memory for host in MB",
 			Value:  defaultMemory,
+			EnvVar: "VIRTUALBOX_MEMORY_SIZE",
 		},
-		cli.IntFlag{
-			EnvVar: "VIRTUALBOX_CPU_COUNT",
+		mcnflag.IntFlag{
 			Name:   "virtualbox-cpu-count",
 			Usage:  "number of CPUs for the machine (-1 to use the number of CPUs available)",
 			Value:  defaultCPU,
+			EnvVar: "VIRTUALBOX_CPU_COUNT",
 		},
-		cli.IntFlag{
-			EnvVar: "VIRTUALBOX_DISK_SIZE",
+		mcnflag.IntFlag{
 			Name:   "virtualbox-disk-size",
 			Usage:  "Size of disk for host in MB",
 			Value:  defaultDiskSize,
+			EnvVar: "VIRTUALBOX_DISK_SIZE",
 		},
-		cli.StringFlag{
-			EnvVar: "VIRTUALBOX_BOOT2DOCKER_URL",
+		mcnflag.StringFlag{
 			Name:   "virtualbox-boot2docker-url",
 			Usage:  "The URL of the boot2docker image. Defaults to the latest available version",
 			Value:  defaultBoot2DockerURL,
+			EnvVar: "VIRTUALBOX_BOOT2DOCKER_URL",
 		},
-		cli.StringFlag{
-			Name:  "virtualbox-import-boot2docker-vm",
-			Usage: "The name of a Boot2Docker VM to import",
-			Value: defaultBoot2DockerImportVM,
+		mcnflag.StringFlag{
+			Name:   "virtualbox-import-boot2docker-vm",
+			Usage:  "The name of a Boot2Docker VM to import",
+			Value:  defaultBoot2DockerImportVM,
+			EnvVar: "VIRTUALBOX_BOOT2DOCKER_IMPORT_VM",
 		},
-		cli.StringFlag{
+		mcnflag.BoolFlag{
+			Name:   "virtualbox-host-dns-resolver",
+			Usage:  "Use the host DNS resolver",
+			EnvVar: "VIRTUALBOX_HOST_DNS_RESOLVER",
+		},
+		mcnflag.StringFlag{
 			Name:   "virtualbox-hostonly-cidr",
 			Usage:  "Specify the Host Only CIDR",
 			Value:  defaultHostOnlyCIDR,
 			EnvVar: "VIRTUALBOX_HOSTONLY_CIDR",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			Name:   "virtualbox-hostonly-nictype",
 			Usage:  "Specify the Host Only Network Adapter Type",
 			Value:  defaultHostOnlyNictype,
 			EnvVar: "VIRTUALBOX_HOSTONLY_NIC_TYPE",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			Name:   "virtualbox-hostonly-nicpromisc",
 			Usage:  "Specify the Host Only Network Adapter Promiscuous Mode",
 			Value:  defaultHostOnlyPromiscMode,
 			EnvVar: "VIRTUALBOX_HOSTONLY_NIC_PROMISC",
 		},
-		cli.BoolFlag{
-			Name:  "virtualbox-no-share",
-			Usage: "Disable the mount of your home directory",
+		mcnflag.BoolFlag{
+			Name:   "virtualbox-no-share",
+			Usage:  "Disable the mount of your home directory",
+			EnvVar: "VIRTUALBOX_NO_SHARE",
+		},
+		mcnflag.BoolFlag{
+			Name:   "virtualbox-dns-proxy",
+			Usage:  "Proxy all DNS requests to the host",
+			EnvVar: "VIRTUALBOX_DNS_PROXY",
+		},
+		mcnflag.BoolFlag{
+			Name:   "virtualbox-no-vtx-check",
+			Usage:  "Disable checking for the availability of hardware virtualization before the vm is started",
+			EnvVar: "VIRTUALBOX_NO_VTX_CHECK",
 		},
 	}
 }
@@ -147,6 +163,7 @@ func (d *Driver) GetSSHUsername() string {
 	return d.SSHUser
 }
 
+// DriverName returns the name of the driver
 func (d *Driver) DriverName() string {
 	return "virtualbox"
 }
@@ -167,48 +184,102 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.Memory = flags.Int("virtualbox-memory")
 	d.DiskSize = flags.Int("virtualbox-disk-size")
 	d.Boot2DockerURL = flags.String("virtualbox-boot2docker-url")
-	d.SwarmMaster = flags.Bool("swarm-master")
-	d.SwarmHost = flags.String("swarm-host")
-	d.SwarmDiscovery = flags.String("swarm-discovery")
+	d.SetSwarmConfigFromFlags(flags)
 	d.SSHUser = "docker"
 	d.Boot2DockerImportVM = flags.String("virtualbox-import-boot2docker-vm")
+	d.HostDNSResolver = flags.Bool("virtualbox-host-dns-resolver")
 	d.HostOnlyCIDR = flags.String("virtualbox-hostonly-cidr")
 	d.HostOnlyNicType = flags.String("virtualbox-hostonly-nictype")
 	d.HostOnlyPromiscMode = flags.String("virtualbox-hostonly-nicpromisc")
 	d.NoShare = flags.Bool("virtualbox-no-share")
+	d.DNSProxy = flags.Bool("virtualbox-dns-proxy")
+	d.NoVTXCheck = flags.Bool("virtualbox-no-vtx-check")
 
 	return nil
 }
 
+// PreCreateCheck checks that VBoxManage exists and works
 func (d *Driver) PreCreateCheck() error {
-	return nil
-}
-
-func (d *Driver) Create() error {
-	var (
-		err error
-	)
-
 	// Check that VBoxManage exists and works
-	if err = vbm(); err != nil {
+	version, err := d.vbmOut("--version")
+	if err != nil {
 		return err
 	}
 
-	b2dutils := mcnutils.NewB2dUtils("", "", d.StorePath)
+	// Check that VBoxManage is of a supported version
+	if err = checkVBoxManageVersion(strings.TrimSpace(version)); err != nil {
+		return err
+	}
+
+	if !d.NoVTXCheck {
+		if isHyperVInstalled() {
+			return ErrNotCompatibleWithHyperV
+		}
+
+		if d.IsVTXDisabled() {
+			return ErrMustEnableVTX
+		}
+	}
+
+	// Downloading boot2docker to cache should be done here to make sure
+	// that a download failure will not leave a machine half created.
+	b2dutils := mcnutils.NewB2dUtils(d.StorePath)
+	if err := b2dutils.UpdateISOCache(d.Boot2DockerURL); err != nil {
+		return err
+	}
+
+	// Check that Host-only interfaces are ok
+	if _, err = listHostOnlyAdapters(d.VBoxManager); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// IsVTXDisabledInTheVM checks if VT-X is disabled in the started vm.
+func (d *Driver) IsVTXDisabledInTheVM() (bool, error) {
+	logPath := filepath.Join(d.ResolveStorePath(d.MachineName), "Logs", "VBox.log")
+	log.Debugf("Checking vm logs: %s", logPath)
+
+	file, err := os.Open(logPath)
+	if err != nil {
+		return true, err
+	}
+
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), "VT-x is disabled") {
+			return true, nil
+		}
+		if strings.Contains(scanner.Text(), "the host CPU does NOT support HW virtualization") {
+			return true, nil
+		}
+		if strings.Contains(scanner.Text(), "VERR_VMX_UNABLE_TO_START_VM") {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (d *Driver) Create() error {
+	b2dutils := mcnutils.NewB2dUtils(d.StorePath)
 	if err := b2dutils.CopyIsoToMachineDir(d.Boot2DockerURL, d.MachineName); err != nil {
 		return err
 	}
 
-	log.Infof("Creating VirtualBox VM...")
+	log.Info("Creating VirtualBox VM...")
 
 	// import b2d VM if requested
 	if d.Boot2DockerImportVM != "" {
 		name := d.Boot2DockerImportVM
 
 		// make sure vm is stopped
-		_ = vbm("controlvm", name, "poweroff")
+		_ = d.vbm("controlvm", name, "poweroff")
 
-		diskInfo, err := getVMDiskInfo(name)
+		diskInfo, err := getVMDiskInfo(name, d.VBoxManager)
 		if err != nil {
 			return err
 		}
@@ -217,12 +288,12 @@ func (d *Driver) Create() error {
 			return err
 		}
 
-		if err := vbm("clonehd", diskInfo.Path, d.diskPath()); err != nil {
+		if err := d.vbm("clonehd", diskInfo.Path, d.diskPath()); err != nil {
 			return err
 		}
 
 		log.Debugf("Importing VM settings...")
-		vmInfo, err := getVMInfo(name)
+		vmInfo, err := getVMInfo(name, d.VBoxManager)
 		if err != nil {
 			return err
 		}
@@ -247,7 +318,7 @@ func (d *Driver) Create() error {
 		}
 	}
 
-	if err := vbm("createvm",
+	if err := d.vbm("createvm",
 		"--basefolder", d.ResolveStorePath("."),
 		"--name", d.MachineName,
 		"--register"); err != nil {
@@ -265,7 +336,17 @@ func (d *Driver) Create() error {
 		cpus = 32
 	}
 
-	if err := vbm("modifyvm", d.MachineName,
+	hostDNSResolver := "off"
+	if d.HostDNSResolver {
+		hostDNSResolver = "on"
+	}
+
+	dnsProxy := "off"
+	if d.DNSProxy {
+		dnsProxy = "on"
+	}
+
+	if err := d.vbm("modifyvm", d.MachineName,
 		"--firmware", "bios",
 		"--bioslogofadein", "off",
 		"--bioslogofadeout", "off",
@@ -277,8 +358,8 @@ func (d *Driver) Create() error {
 		"--acpi", "on",
 		"--ioapic", "on",
 		"--rtcuseutc", "on",
-		"--natdnshostresolver1", "off",
-		"--natdnsproxy1", "off",
+		"--natdnshostresolver1", hostDNSResolver,
+		"--natdnsproxy1", dnsProxy,
 		"--cpuhotplug", "off",
 		"--pae", "on",
 		"--hpet", "on",
@@ -291,25 +372,21 @@ func (d *Driver) Create() error {
 		return err
 	}
 
-	if err := vbm("modifyvm", d.MachineName,
+	if err := d.vbm("modifyvm", d.MachineName,
 		"--nic1", "nat",
 		"--nictype1", "82540EM",
 		"--cableconnected1", "on"); err != nil {
 		return err
 	}
 
-	if err := d.setupHostOnlyNetwork(d.MachineName); err != nil {
-		return err
-	}
-
-	if err := vbm("storagectl", d.MachineName,
+	if err := d.vbm("storagectl", d.MachineName,
 		"--name", "SATA",
 		"--add", "sata",
 		"--hostiocache", "on"); err != nil {
 		return err
 	}
 
-	if err := vbm("storageattach", d.MachineName,
+	if err := d.vbm("storageattach", d.MachineName,
 		"--storagectl", "SATA",
 		"--port", "0",
 		"--device", "0",
@@ -318,7 +395,7 @@ func (d *Driver) Create() error {
 		return err
 	}
 
-	if err := vbm("storageattach", d.MachineName,
+	if err := d.vbm("storageattach", d.MachineName,
 		"--storagectl", "SATA",
 		"--port", "1",
 		"--device", "0",
@@ -328,23 +405,14 @@ func (d *Driver) Create() error {
 	}
 
 	// let VBoxService do nice magic automounting (when it's used)
-	if err := vbm("guestproperty", "set", d.MachineName, "/VirtualBox/GuestAdd/SharedFolders/MountPrefix", "/"); err != nil {
+	if err := d.vbm("guestproperty", "set", d.MachineName, "/VirtualBox/GuestAdd/SharedFolders/MountPrefix", "/"); err != nil {
 		return err
 	}
-	if err := vbm("guestproperty", "set", d.MachineName, "/VirtualBox/GuestAdd/SharedFolders/MountDir", "/"); err != nil {
+	if err := d.vbm("guestproperty", "set", d.MachineName, "/VirtualBox/GuestAdd/SharedFolders/MountDir", "/"); err != nil {
 		return err
 	}
 
-	var shareName, shareDir string // TODO configurable at some point
-	switch runtime.GOOS {
-	case "windows":
-		shareName = "c/Users"
-		shareDir = "c:\\Users"
-	case "darwin":
-		shareName = "Users"
-		shareDir = "/Users"
-		// TODO "linux"
-	}
+	shareName, shareDir := getShareDriveAndName()
 
 	if shareDir != "" && !d.NoShare {
 		log.Debugf("setting up shareDir")
@@ -359,38 +427,34 @@ func (d *Driver) Create() error {
 			}
 
 			// woo, shareDir exists!  let's carry on!
-			if err := vbm("sharedfolder", "add", d.MachineName, "--name", shareName, "--hostpath", shareDir, "--automount"); err != nil {
+			if err := d.vbm("sharedfolder", "add", d.MachineName, "--name", shareName, "--hostpath", shareDir, "--automount"); err != nil {
 				return err
 			}
 
 			// enable symlinks
-			if err := vbm("setextradata", d.MachineName, "VBoxInternal2/SharedFoldersEnableSymlinksCreate/"+shareName, "1"); err != nil {
+			if err := d.vbm("setextradata", d.MachineName, "VBoxInternal2/SharedFoldersEnableSymlinksCreate/"+shareName, "1"); err != nil {
 				return err
 			}
 		}
 	}
 
-	log.Infof("Starting VirtualBox VM...")
-
-	if err := d.Start(); err != nil {
-		return err
-	}
-
-	return nil
+	log.Info("Starting the VM...")
+	return d.Start()
 }
 
-func (d *Driver) hostOnlyIpAvailable() bool {
+func (d *Driver) hostOnlyIPAvailable() bool {
 	ip, err := d.GetIP()
 	if err != nil {
-		log.Debug("ERROR getting IP: %s", err)
+		log.Debugf("ERROR getting IP: %s", err)
 		return false
 	}
-	if ip != "" {
-		log.Debugf("IP is %s", ip)
-		return true
+	if ip == "" {
+		log.Debug("Strangely, there was no error attempting to get the IP, but it was still empty.")
+		return false
 	}
-	log.Debug("Strangely, there was no error attempting to get the IP, but it was still empty.")
-	return false
+
+	log.Debugf("IP is %s", ip)
+	return true
 }
 
 func (d *Driver) Start() error {
@@ -399,25 +463,27 @@ func (d *Driver) Start() error {
 		return err
 	}
 
+	var hostOnlyAdapter *hostOnlyNetwork
 	if s == state.Stopped {
 		// check network to re-create if needed
-		if err := d.setupHostOnlyNetwork(d.MachineName); err != nil {
+		if hostOnlyAdapter, err = d.setupHostOnlyNetwork(d.MachineName); err != nil {
 			return fmt.Errorf("Error setting up host only network on machine start: %s", err)
 		}
 	}
 
 	switch s {
 	case state.Stopped, state.Saved:
-		d.SSHPort, err = setPortForwarding(d.MachineName, 1, "ssh", "tcp", 22, d.SSHPort)
+		d.SSHPort, err = setPortForwarding(d, 1, "ssh", "tcp", 22, d.SSHPort)
 		if err != nil {
 			return err
 		}
-		if err := vbm("startvm", d.MachineName, "--type", "headless"); err != nil {
-			return err
+
+		if err := d.vbm("startvm", d.MachineName, "--type", "headless"); err != nil {
+			// TODO: We could capture the last lines of the vbox log
+			return fmt.Errorf("Unable to start the VM: %s", err)
 		}
-		log.Infof("Starting VM...")
 	case state.Paused:
-		if err := vbm("controlvm", d.MachineName, "resume", "--type", "headless"); err != nil {
+		if err := d.vbm("controlvm", d.MachineName, "resume", "--type", "headless"); err != nil {
 			return err
 		}
 		log.Infof("Resuming VM ...")
@@ -425,23 +491,82 @@ func (d *Driver) Start() error {
 		log.Infof("VM not in restartable state")
 	}
 
-	// Wait for SSH over NAT to be available before returning to user
-	if err := drivers.WaitForSSH(d); err != nil {
+	// Verify that VT-X is not disabled in the started VM
+	vtxIsDisabled, err := d.IsVTXDisabledInTheVM()
+	if err != nil {
+		return fmt.Errorf("Checking if hardware virtualization is enabled failed: %s", err)
+	}
+
+	if vtxIsDisabled {
+		return ErrMustEnableVTX
+	}
+
+	log.Infof("Waiting for an IP...")
+	if err := d.waitForIP(); err != nil {
 		return err
 	}
 
-	// Bail if we don't get an IP from DHCP after a given number of seconds.
-	if err := mcnutils.WaitForSpecific(d.hostOnlyIpAvailable, 5, 4*time.Second); err != nil {
+	if hostOnlyAdapter == nil {
+		return nil
+	}
+
+	// Check that the host-only adapter we just created can still be found
+	// Sometimes it is corrupted after the VM is started.
+	nets, err := listHostOnlyAdapters(d.VBoxManager)
+	if err != nil {
 		return err
 	}
 
-	d.IPAddress, err = d.GetIP()
+	ip, network, err := parseAndValidateCIDR(d.HostOnlyCIDR)
+	if err != nil {
+		return err
+	}
 
-	return err
+	hostOnlyNet := getHostOnlyAdapter(nets, ip, network.Mask)
+	if hostOnlyNet != nil {
+		// OK, we found a valid host-only adapter
+		return nil
+	}
+
+	// This happens a lot on windows. The adapter has an invalid IP and the VM has the same IP
+	log.Warn("The host-only adapter is corrupted. Let's stop the VM, fix the host-only adapter and restart the VM")
+	if err := d.Stop(); err != nil {
+		return err
+	}
+
+	// We have to be sure the host-only adapter is not used by the VM
+	time.Sleep(5 * time.Second)
+
+	log.Debugf("Fixing %+v...", hostOnlyAdapter)
+	if err := hostOnlyAdapter.SaveIPv4(d.VBoxManager); err != nil {
+		return err
+	}
+
+	// We have to be sure the adapter is updated before starting the VM
+	time.Sleep(5 * time.Second)
+
+	if err := d.vbm("startvm", d.MachineName, "--type", "headless"); err != nil {
+		return fmt.Errorf("Unable to start the VM: %s", err)
+	}
+
+	log.Infof("Waiting for an IP...")
+	return d.waitForIP()
 }
 
 func (d *Driver) Stop() error {
-	if err := vbm("controlvm", d.MachineName, "acpipowerbutton"); err != nil {
+	currentState, err := d.GetState()
+	if err != nil {
+		return err
+	}
+
+	if currentState == state.Paused {
+		if err := d.vbm("controlvm", d.MachineName, "resume"); err != nil { // , "--type", "headless"
+			return err
+		}
+		log.Infof("Resuming VM ...")
+	}
+
+	if err := d.vbm("controlvm", d.MachineName, "acpipowerbutton"); err != nil {
 		return err
 	}
 	for {
@@ -461,6 +586,38 @@ func (d *Driver) Stop() error {
 	return nil
 }
 
+// Restart restarts a machine which is known to be running.
+func (d *Driver) Restart() error {
+	if err := d.vbm("controlvm", d.MachineName, "reset"); err != nil {
+		return err
+	}
+
+	d.IPAddress = ""
+
+	return d.waitForIP()
+}
+
+func (d *Driver) Kill() error {
+	return d.vbm("controlvm", d.MachineName, "poweroff")
+}
+
+func (d *Driver) waitForIP() error {
+	// Wait for SSH over NAT to be available before returning to user
+	if err := drivers.WaitForSSH(d); err != nil {
+		return err
+	}
+
+	// Bail if we don't get an IP from DHCP after a given number of seconds.
+	if err := mcnutils.WaitForSpecific(d.hostOnlyIPAvailable, 5, 4*time.Second); err != nil {
+		return err
+	}
+
+	var err error
+	d.IPAddress, err = d.GetIP()
+
+	return err
+}
+
 func (d *Driver) Remove() error {
 	s, err := d.GetState()
 	if err != nil {
@@ -474,33 +631,18 @@ func (d *Driver) Remove() error {
 		if err := d.Stop(); err != nil {
 			return err
 		}
-	}
-	// vbox will not release it's lock immediately after the stop
-	time.Sleep(1 * time.Second)
-	return vbm("unregistervm", "--delete", d.MachineName)
-}
-
-func (d *Driver) Restart() error {
-	s, err := d.GetState()
-	if err != nil {
-		return err
-	}
-
-	if s == state.Running {
-		if err := d.Stop(); err != nil {
+	} else if s != state.Stopped {
+		if err := d.Kill(); err != nil {
 			return err
 		}
 	}
-	return d.Start()
-}
-
-func (d *Driver) Kill() error {
-	return vbm("controlvm", d.MachineName, "poweroff")
+	// vbox will not release it's lock immediately after the stop
+	time.Sleep(1 * time.Second)
+	return d.vbm("unregistervm", "--delete", d.MachineName)
 }
 
 func (d *Driver) GetState() (state.State, error) {
-	stdout, stderr, err := vbmOutErr("showvminfo", d.MachineName,
-		"--machinereadable")
+	stdout, stderr, err := d.vbmOutErr("showvminfo", d.MachineName, "--machinereadable")
 	if err != nil {
 		if reMachineNotFound.FindString(stderr) != "" {
 			return state.Error, ErrMachineNotExist
@@ -567,50 +709,17 @@ func (d *Driver) diskPath() string {
 func (d *Driver) generateDiskImage(size int) error {
 	log.Debugf("Creating %d MB hard disk image...", size)
 
-	magicString := "boot2docker, please format-me"
-
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-
-	// magicString first so the automount script knows to format the disk
-	file := &tar.Header{Name: magicString, Size: int64(len(magicString))}
-	if err := tw.WriteHeader(file); err != nil {
-		return err
-	}
-	if _, err := tw.Write([]byte(magicString)); err != nil {
-		return err
-	}
-	// .ssh/key.pub => authorized_keys
-	file = &tar.Header{Name: ".ssh", Typeflag: tar.TypeDir, Mode: 0700}
-	if err := tw.WriteHeader(file); err != nil {
-		return err
-	}
-	pubKey, err := ioutil.ReadFile(d.publicSSHKeyPath())
+	tarBuf, err := mcnutils.MakeDiskImage(d.publicSSHKeyPath())
 	if err != nil {
 		return err
 	}
-	file = &tar.Header{Name: ".ssh/authorized_keys", Size: int64(len(pubKey)), Mode: 0644}
-	if err := tw.WriteHeader(file); err != nil {
-		return err
-	}
-	if _, err := tw.Write([]byte(pubKey)); err != nil {
-		return err
-	}
-	file = &tar.Header{Name: ".ssh/authorized_keys2", Size: int64(len(pubKey)), Mode: 0644}
-	if err := tw.WriteHeader(file); err != nil {
-		return err
-	}
-	if _, err := tw.Write([]byte(pubKey)); err != nil {
-		return err
-	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-	raw := bytes.NewReader(buf.Bytes())
-	return createDiskImage(d.diskPath(), size, raw)
+
+	log.Debug("Calling inner createDiskImage")
+
+	return createDiskImage(d.diskPath(), size, tarBuf)
 }
 
-func (d *Driver) setupHostOnlyNetwork(machineName string) error {
+func (d *Driver) setupHostOnlyNetwork(machineName string) (*hostOnlyNetwork, error) {
 	hostOnlyCIDR := d.HostOnlyCIDR
 
 	// This is to assist in migrating from version 0.2 to 0.3 format
@@ -619,46 +728,64 @@ func (d *Driver) setupHostOnlyNetwork(machineName string) error {
 		hostOnlyCIDR = defaultHostOnlyCIDR
 	}
 
-	ip, network, err := net.ParseCIDR(hostOnlyCIDR)
-
+	ip, network, err := parseAndValidateCIDR(hostOnlyCIDR)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	log.Debugf("Searching for hostonly interface for IPv4: %s and Mask: %s", ip, network.Mask)
+	hostOnlyAdapter, err := getOrCreateHostOnlyNetwork(ip, network.Mask, d.VBoxManager)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Debug("Removing orphan DHCP servers...")
+	if err := removeOrphanDHCPServers(d.VBoxManager); err != nil {
+		return nil, err
+	}
+
+	dhcpAddr, err := getRandomIPinSubnet(ip)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Debugf("Adding/Modifying DHCP server %q...", dhcpAddr)
 	nAddr := network.IP.To4()
 
-	dhcpAddr, err := getRandomIPinSubnet(network.IP)
-	if err != nil {
-		return err
+	dhcp := dhcpServer{}
+	dhcp.IPv4.IP = dhcpAddr
+	dhcp.IPv4.Mask = network.Mask
+	dhcp.LowerIP = net.IPv4(nAddr[0], nAddr[1], nAddr[2], byte(100))
+	dhcp.UpperIP = net.IPv4(nAddr[0], nAddr[1], nAddr[2], byte(254))
+	dhcp.Enabled = true
+	if err := addHostOnlyDHCPServer(hostOnlyAdapter.Name, dhcp, d.VBoxManager); err != nil {
+		return nil, err
 	}
 
-	lowerDHCPIP := net.IPv4(nAddr[0], nAddr[1], nAddr[2], byte(100))
-	upperDHCPIP := net.IPv4(nAddr[0], nAddr[1], nAddr[2], byte(254))
-
-	log.Debugf("using %s for dhcp address", dhcpAddr)
-
-	hostOnlyNetwork, err := getOrCreateHostOnlyNetwork(
-		ip,
-		network.Mask,
-		dhcpAddr,
-		lowerDHCPIP,
-		upperDHCPIP,
-	)
-
-	if err != nil {
-		return err
-	}
-
-	if err := vbm("modifyvm", machineName,
+	if err := d.vbm("modifyvm", machineName,
 		"--nic2", "hostonly",
 		"--nictype2", d.HostOnlyNicType,
 		"--nicpromisc2", d.HostOnlyPromiscMode,
-		"--hostonlyadapter2", hostOnlyNetwork.Name,
+		"--hostonlyadapter2", hostOnlyAdapter.Name,
 		"--cableconnected2", "on"); err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return hostOnlyAdapter, nil
+}
+
+func parseAndValidateCIDR(hostOnlyCIDR string) (net.IP, *net.IPNet, error) {
+	ip, network, err := net.ParseCIDR(hostOnlyCIDR)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	networkAddress := network.IP.To4()
+	if ip.Equal(networkAddress) {
+		return nil, nil, ErrNetworkAddrCidr
+	}
+
+	return ip, network, nil
 }
 
 // createDiskImage makes a disk image at dest with the given size in MB. If r is
@@ -670,6 +797,8 @@ func createDiskImage(dest string, size int, r io.Reader) error {
 	cmd := exec.Command(vboxManageCmd, "convertfromraw", "stdin", dest,
 		fmt.Sprintf("%d", sizeBytes), "--format", "VMDK")
 
+	log.Debug(cmd)
+
 	if os.Getenv("MACHINE_DEBUG") != "" {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -679,14 +808,21 @@ func createDiskImage(dest string, size int, r io.Reader) error {
 	if err != nil {
 		return err
 	}
+
+	log.Debug("Starting command")
+
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+
+	log.Debug("Copying to stdin")
 
 	n, err := io.Copy(stdin, r)
 	if err != nil {
 		return err
 	}
+
+	log.Debug("Filling zeroes")
 
 	// The total number of bytes written to stdin must match sizeBytes, or
 	// VBoxManage.exe on Windows will fail. Fill remaining with zeros.
@@ -696,10 +832,14 @@ func createDiskImage(dest string, size int, r io.Reader) error {
 		}
 	}
 
+	log.Debug("Closing STDIN")
+
 	// cmd won't exit until the stdin is closed.
 	if err := stdin.Close(); err != nil {
 		return err
 	}
+
+	log.Debug("Waiting on cmd")
 
 	return cmd.Wait()
 }
@@ -750,7 +890,7 @@ func getAvailableTCPPort(port int) (int, error) {
 }
 
 // Setup a NAT port forwarding entry.
-func setPortForwarding(machine string, interfaceNum int, mapName, protocol string, guestPort, desiredHostPort int) (int, error) {
+func setPortForwarding(d *Driver, interfaceNum int, mapName, protocol string, guestPort, desiredHostPort int) (int, error) {
 	actualHostPort, err := getAvailableTCPPort(desiredHostPort)
 	if err != nil {
 		return -1, err
@@ -760,8 +900,8 @@ func setPortForwarding(machine string, interfaceNum int, mapName, protocol strin
 			guestPort, mapName, desiredHostPort, actualHostPort)
 	}
 	cmd := fmt.Sprintf("--natpf%d", interfaceNum)
-	vbm("modifyvm", machine, cmd, "delete", mapName)
-	if err := vbm("modifyvm", machine,
+	d.vbm("modifyvm", d.MachineName, cmd, "delete", mapName)
+	if err := d.vbm("modifyvm", d.MachineName,
 		cmd, fmt.Sprintf("%s,%s,127.0.0.1,%d,,%d", mapName, protocol, actualHostPort, guestPort)); err != nil {
 		return -1, err
 	}
@@ -789,4 +929,12 @@ func getRandomIPinSubnet(baseIP net.IP) (net.IP, error) {
 	}
 
 	return dhcpAddr, nil
+}
+
+func detectVBoxManageCmdInPath() string {
+	cmd := "VBoxManage"
+	if path, err := exec.LookPath(cmd); err == nil {
+		return path
+	}
+	return cmd
 }

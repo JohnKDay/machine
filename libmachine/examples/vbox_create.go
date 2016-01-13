@@ -2,8 +2,8 @@ package main
 
 // Sample Virtualbox create independent of Machine CLI.
 import (
+	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/docker/machine/drivers/virtualbox"
 	"github.com/docker/machine/libmachine"
@@ -11,16 +11,10 @@ import (
 )
 
 func main() {
-	libmachine.SetDebug(true)
+	log.SetDebug(true)
 
-	log.SetOutWriter(os.Stdout)
-	log.SetErrWriter(os.Stderr)
-
-	// returns the familiar store at $HOME/.docker/machine
-	store := libmachine.GetDefaultStore()
-
-	// over-ride this for now (don't want to muck with my default store)
-	store.Path = "/tmp/automatic"
+	client := libmachine.NewClient("/tmp/automatic", "/tmp/automatic/certs")
+	defer client.Close()
 
 	hostName := "myfunhost"
 
@@ -29,26 +23,36 @@ func main() {
 	driver.CPU = 2
 	driver.Memory = 2048
 
-	h, err := store.NewHost(driver)
+	data, err := json.Marshal(driver)
 	if err != nil {
-		log.Fatal(err)
+		log.Error(err)
+		return
+	}
+
+	h, err := client.NewHost("virtualbox", data)
+	if err != nil {
+		log.Error(err)
+		return
 	}
 
 	h.HostOptions.EngineOptions.StorageDriver = "overlay"
 
-	if err := libmachine.Create(store, h); err != nil {
-		log.Fatal(err)
+	if err := client.Create(h); err != nil {
+		log.Error(err)
+		return
 	}
 
 	out, err := h.RunSSHCommand("df -h")
 	if err != nil {
-		log.Fatal(err)
+		log.Error(err)
+		return
 	}
 
 	fmt.Printf("Results of your disk space query:\n%s\n", out)
 
 	fmt.Println("Powering down machine now...")
 	if err := h.Stop(); err != nil {
-		log.Fatal(err)
+		log.Error(err)
+		return
 	}
 }

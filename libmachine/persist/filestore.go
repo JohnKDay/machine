@@ -8,14 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/docker/machine/libmachine/auth"
-	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/engine"
 	"github.com/docker/machine/libmachine/host"
-	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnerror"
-	"github.com/docker/machine/libmachine/swarm"
-	"github.com/docker/machine/libmachine/version"
 )
 
 type Filestore struct {
@@ -24,12 +18,45 @@ type Filestore struct {
 	CaPrivateKeyPath string
 }
 
-func (s Filestore) getMachinesDir() string {
+func NewFilestore(path, caCertPath, caPrivateKeyPath string) *Filestore {
+	return &Filestore{
+		Path:             path,
+		CaCertPath:       caCertPath,
+		CaPrivateKeyPath: caPrivateKeyPath,
+	}
+}
+
+func (s Filestore) GetMachinesDir() string {
 	return filepath.Join(s.Path, "machines")
 }
 
 func (s Filestore) saveToFile(data []byte, file string) error {
-	return ioutil.WriteFile(file, data, 0600)
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		return ioutil.WriteFile(file, data, 0600)
+	}
+
+	tmpfi, err := ioutil.TempFile(filepath.Dir(file), "config.json.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpfi.Name())
+
+	if err = ioutil.WriteFile(tmpfi.Name(), data, 0600); err != nil {
+		return err
+	}
+
+	if err = tmpfi.Close(); err != nil {
+		return err
+	}
+
+	if err = os.Remove(file); err != nil {
+		return err
+	}
+
+	if err = os.Rename(tmpfi.Name(), file); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s Filestore) Save(host *host.Host) error {
@@ -38,7 +65,7 @@ func (s Filestore) Save(host *host.Host) error {
 		return err
 	}
 
-	hostPath := filepath.Join(s.getMachinesDir(), host.Name)
+	hostPath := filepath.Join(s.GetMachinesDir(), host.Name)
 
 	// Ensure that the directory we want to save to exists.
 	if err := os.MkdirAll(hostPath, 0700); err != nil {
@@ -48,45 +75,30 @@ func (s Filestore) Save(host *host.Host) error {
 	return s.saveToFile(data, filepath.Join(hostPath, "config.json"))
 }
 
-func (s Filestore) Remove(name string, force bool) error {
-	h, err := s.Load(name)
-	if err != nil {
-		return err
-	}
-
-	if err := h.Driver.Remove(); err != nil {
-		if !force {
-			return err
-		}
-	}
-
-	hostPath := filepath.Join(s.getMachinesDir(), name)
+func (s Filestore) Remove(name string) error {
+	hostPath := filepath.Join(s.GetMachinesDir(), name)
 	return os.RemoveAll(hostPath)
 }
 
-func (s Filestore) List() ([]*host.Host, error) {
-	dir, err := ioutil.ReadDir(s.getMachinesDir())
+func (s Filestore) List() ([]string, error) {
+	dir, err := ioutil.ReadDir(s.GetMachinesDir())
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 
-	hosts := []*host.Host{}
+	hostNames := []string{}
 
 	for _, file := range dir {
 		if file.IsDir() && !strings.HasPrefix(file.Name(), ".") {
-			host, err := s.Load(file.Name())
-			if err != nil {
-				log.Errorf("error loading host %q: %s", file.Name(), err)
-				continue
-			}
-			hosts = append(hosts, host)
+			hostNames = append(hostNames, file.Name())
 		}
 	}
-	return hosts, nil
+
+	return hostNames, nil
 }
 
 func (s Filestore) Exists(name string) (bool, error) {
-	_, err := os.Stat(filepath.Join(s.getMachinesDir(), name))
+	_, err := os.Stat(filepath.Join(s.GetMachinesDir(), name))
 
 	if os.IsNotExist(err) {
 		return false, nil
@@ -98,7 +110,7 @@ func (s Filestore) Exists(name string) (bool, error) {
 }
 
 func (s Filestore) loadConfig(h *host.Host) error {
-	data, err := ioutil.ReadFile(filepath.Join(s.getMachinesDir(), h.Name, "config.json"))
+	data, err := ioutil.ReadFile(filepath.Join(s.GetMachinesDir(), h.Name, "config.json"))
 	if err != nil {
 		return err
 	}
@@ -118,7 +130,7 @@ func (s Filestore) loadConfig(h *host.Host) error {
 
 	// If we end up performing a migration, we should save afterwards so we don't have to do it again on subsequent invocations.
 	if migrationPerformed {
-		if err := s.saveToFile(data, filepath.Join(s.getMachinesDir(), h.Name, "config.json.bak")); err != nil {
+		if err := s.saveToFile(data, filepath.Join(s.GetMachinesDir(), h.Name, "config.json.bak")); err != nil {
 			return fmt.Errorf("Error attempting to save backup after migration: %s", err)
 		}
 
@@ -128,11 +140,10 @@ func (s Filestore) loadConfig(h *host.Host) error {
 	}
 
 	return nil
-
 }
 
 func (s Filestore) Load(name string) (*host.Host, error) {
-	hostPath := filepath.Join(s.getMachinesDir(), name)
+	hostPath := filepath.Join(s.GetMachinesDir(), name)
 
 	if _, err := os.Stat(hostPath); os.IsNotExist(err) {
 		return nil, mcnerror.ErrHostDoesNotExist{
@@ -149,38 +160,4 @@ func (s Filestore) Load(name string) (*host.Host, error) {
 	}
 
 	return host, nil
-}
-
-func (s Filestore) NewHost(driver drivers.Driver) (*host.Host, error) {
-	certDir := filepath.Join(s.Path, "certs")
-
-	hostOptions := &host.HostOptions{
-		AuthOptions: &auth.AuthOptions{
-			CertDir:          certDir,
-			CaCertPath:       filepath.Join(certDir, "ca.pem"),
-			CaPrivateKeyPath: filepath.Join(certDir, "ca-key.pem"),
-			ClientCertPath:   filepath.Join(certDir, "cert.pem"),
-			ClientKeyPath:    filepath.Join(certDir, "key.pem"),
-			ServerCertPath:   filepath.Join(s.getMachinesDir(), "server.pem"),
-			ServerKeyPath:    filepath.Join(s.getMachinesDir(), "server-key.pem"),
-		},
-		EngineOptions: &engine.EngineOptions{
-			InstallURL:    "https://get.docker.com",
-			StorageDriver: "aufs",
-			TlsVerify:     true,
-		},
-		SwarmOptions: &swarm.SwarmOptions{
-			Host:     "tcp://0.0.0.0:3376",
-			Image:    "swarm:latest",
-			Strategy: "spread",
-		},
-	}
-
-	return &host.Host{
-		ConfigVersion: version.ConfigVersion,
-		Name:          driver.GetMachineName(),
-		Driver:        driver,
-		DriverName:    driver.DriverName(),
-		HostOptions:   hostOptions,
-	}, nil
 }

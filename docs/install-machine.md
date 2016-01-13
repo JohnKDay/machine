@@ -11,12 +11,6 @@ weight=3
 
 # Install Docker Machine
 
-Docker Machine is supported on Windows, OS X, and Linux operating systems. You
-can install using one of Docker's automated installation methods or you can
-download and install via a binary. This page details each of those methods.
-
-## OS X and Windows
-
 On OS X and Windows, Machine is installed along with other Docker products when
 you install the Docker Toolbox. For details on installing Docker Toolbox, see
 the <a href="https://docs.docker.com/installation/mac/" target="_blank">Mac OS X
@@ -24,56 +18,60 @@ installation</a> instructions or <a
 href="https://docs.docker.com/installation/windows" target="_blank">Windows
 installation</a> instructions.
 
-If you only want Docker Machine, you can install [the Machine binaries
-directly](https://github.com/docker/machine/releases/). Alternatively, OS X
-users have the option to follow the Linux installation instructions.
+If you only want Docker Machine, you can install the Machine binaries (the
+latest versions of which are located at
+<https://github.com/docker/machine/releases/> ) directly by following the
+instructions in the next section.
 
-## On Linux
+## Installing Machine Directly
 
-To install on Linux, do the following:
+1.  Install <a href="https://docs.docker.com/installation/"
+    target="_blank">the Docker binary</a>.
 
-1. Install <a href="https://docs.docker.com/installation/"
-target="_blank">Docker version 1.7.1 or greater</a>:
+2.  Download the Docker Machine binary and extract it to your PATH.
 
-2. Download the Machine binary to somewhere in your `PATH` (for example,
-`/usr/local/bin`).
+        Linux:
 
-        $ curl -L https://github.com/docker/machine/releases/download/v0.4.0/docker-machine_linux-amd64 > /usr/local/bin/docker-machine
+            $ curl -L https://github.com/docker/machine/releases/download/v0.5.5/docker-machine_linux-amd64 >/usr/local/bin/docker-machine && \
+            chmod +x /usr/local/bin/docker-machine
 
-3. Apply executable permissions to the binary:
+        OSX:
 
-        $ chmod +x /usr/local/bin/docker-machine
+            $ curl -L https://github.com/docker/machine/releases/download/v0.5.5/docker-machine_darwin-amd64 >/usr/local/bin/docker-machine && \
+            chmod +x /usr/local/bin/docker-machine
 
-4. Check the installation by displaying the Machine version:
+        Windows (using Git Bash):
 
-			$ docker-machine -v
-			machine version 0.4.0
+            $ if [[ ! -d "$HOME/bin" ]]; then mkdir -p "$HOME/bin"; fi && \
+            curl -L https://github.com/docker/machine/releases/download/v0.5.5/docker-machine_windows-amd64.exe > "$HOME/bin/docker-machine.exe" && \
+            chmod +x "$HOME/bin/docker-machine.exe"
 
-## Install from binary
+3.  Check the installation by displaying the Machine version:
 
-The Docker Machine team compiles binaries for several platforms and
-architectures and makes them available from [the Machine release page on
-Github](https://github.com/docker/machine/releases/). To install from a binary:
+        $ docker-machine version
+        docker-machine version 0.5.5, build 02c4254
 
-1. Download the binary you want.
-2. Rename the binary to `docker-machine`.
-3. Move the `docker-machine` file to an appropriate directory on your system.
+## Installing bash completion scripts
 
-    For example, on an OS X machine, you might move it to the `/usr/local/bin`
-    directory.
+The Machine repository supplies several `bash` scripts that add features such
+as:
 
-4. Ensure the file's executable permissions are correct.
-5. Apply executable permissions to the binary:
+-   command completion
+-   a function that displays the active machine in your shell prompt
+-   a function wrapper that adds a `docker-machine use` subcommand to switch the
+    active machine
 
-        $ chmod +x /usr/local/bin/docker-machine
+To install the scripts, copy or link them into your `/etc/bash_completion.d` or
+`/usr/local/etc/bash_completion.d` directory. To enable the `docker-machine` shell
+prompt, add `$(__docker_machine_ps1)` to your `PS1` setting in `~/.bashrc`.
 
-6. Check the installation by displaying the Machine version:
+    PS1='[\u@\h \W$(__docker_machine_ps1)]\$ '
 
-        $ docker-machine -v
-        machine version 0.4.0
+You can find additional documentation in the comments at the
+[top of each script](https://github.com/docker/machine/tree/master/contrib/completion/bash).
 
 ## Where to go next
 
-* [Docker Machine overview](/)
-* [Docker Machine driver reference](/drivers)
-* [Docker Machine subcommand reference](/reference)
+-   [Docker Machine overview](index.md)
+-   [Docker Machine driver reference](drivers/index.md)
+-   [Docker Machine subcommand reference](reference/index.md)

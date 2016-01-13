@@ -42,7 +42,7 @@ func makeDockerOptionsDir(p Provisioner) error {
 	return nil
 }
 
-func setRemoteAuthOptions(p Provisioner) auth.AuthOptions {
+func setRemoteAuthOptions(p Provisioner) auth.Options {
 	dockerDir := p.GetDockerOptionsDir()
 	authOptions := p.GetAuthOptions()
 
@@ -63,7 +63,7 @@ func ConfigureAuth(p Provisioner) error {
 	driver := p.GetDriver()
 	machineName := driver.GetMachineName()
 	authOptions := p.GetAuthOptions()
-	org := machineName
+	org := mcnutils.GetUsername() + "." + machineName
 	bits := 2048
 
 	ip, err := driver.GetIP()
@@ -74,28 +74,31 @@ func ConfigureAuth(p Provisioner) error {
 	log.Info("Copying certs to the local machine directory...")
 
 	if err := mcnutils.CopyFile(authOptions.CaCertPath, filepath.Join(authOptions.StorePath, "ca.pem")); err != nil {
-		log.Fatalf("Error copying ca.pem to machine dir: %s", err)
+		return fmt.Errorf("Copying ca.pem to machine dir failed: %s", err)
 	}
 
 	if err := mcnutils.CopyFile(authOptions.ClientCertPath, filepath.Join(authOptions.StorePath, "cert.pem")); err != nil {
-		log.Fatalf("Error copying cert.pem to machine dir: %s", err)
+		return fmt.Errorf("Copying cert.pem to machine dir failed: %s", err)
 	}
 
 	if err := mcnutils.CopyFile(authOptions.ClientKeyPath, filepath.Join(authOptions.StorePath, "key.pem")); err != nil {
-		log.Fatalf("Error copying key.pem to machine dir: %s", err)
+		return fmt.Errorf("Copying key.pem to machine dir failed: %s", err)
 	}
 
-	log.Debugf("generating server cert: %s ca-key=%s private-key=%s org=%s",
+	// The Host IP is always added to the certificate's SANs list
+	hosts := append(authOptions.ServerCertSANs, ip, "localhost")
+	log.Debugf("generating server cert: %s ca-key=%s private-key=%s org=%s san=%s",
 		authOptions.ServerCertPath,
 		authOptions.CaCertPath,
 		authOptions.CaPrivateKeyPath,
 		org,
+		hosts,
 	)
 
 	// TODO: Switch to passing just authOptions to this func
 	// instead of all these individual fields
 	err = cert.GenerateCert(
-		[]string{ip},
+		hosts,
 		authOptions.ServerCertPath,
 		authOptions.ServerKeyPath,
 		authOptions.CaCertPath,
@@ -109,6 +112,10 @@ func ConfigureAuth(p Provisioner) error {
 	}
 
 	if err := p.Service("docker", serviceaction.Stop); err != nil {
+		return err
+	}
+
+	if _, err := p.SSHCommand(`if [ ! -z "$(ip link show docker0)" ]; then sudo ip link delete docker0; fi`); err != nil {
 		return err
 	}
 
@@ -146,11 +153,11 @@ func ConfigureAuth(p Provisioner) error {
 		return err
 	}
 
-	dockerUrl, err := driver.GetURL()
+	dockerURL, err := driver.GetURL()
 	if err != nil {
 		return err
 	}
-	u, err := url.Parse(dockerUrl)
+	u, err := url.Parse(dockerURL)
 	if err != nil {
 		return err
 	}
@@ -179,11 +186,7 @@ func ConfigureAuth(p Provisioner) error {
 		return err
 	}
 
-	if err := waitForDocker(p, dockerPort); err != nil {
-		return err
-	}
-
-	return nil
+	return waitForDocker(p, dockerPort)
 }
 
 func matchNetstatOut(reDaemonListening, netstatOut string) bool {
@@ -209,7 +212,7 @@ func checkDaemonUp(p Provisioner, dockerPort int) func() bool {
 	reDaemonListening := fmt.Sprintf(":%d.*LISTEN", dockerPort)
 	return func() bool {
 		// HACK: Check netstat's output to see if anyone's listening on the Docker API port.
-		netstatOut, err := p.SSHCommand("netstat -a")
+		netstatOut, err := p.SSHCommand("netstat -an")
 		if err != nil {
 			log.Warnf("Error running SSH command: %s", err)
 			return false
@@ -220,7 +223,7 @@ func checkDaemonUp(p Provisioner, dockerPort int) func() bool {
 }
 
 func waitForDocker(p Provisioner, dockerPort int) error {
-	if err := mcnutils.WaitForSpecific(checkDaemonUp(p, dockerPort), 5, 3*time.Second); err != nil {
+	if err := mcnutils.WaitForSpecific(checkDaemonUp(p, dockerPort), 10, 3*time.Second); err != nil {
 		return NewErrDaemonAvailable(err)
 	}
 

@@ -2,49 +2,42 @@ package commands
 
 import (
 	"fmt"
-	"strings"
 
-	"github.com/docker/machine/libmachine/log"
+	"github.com/docker/machine/libmachine"
 	"github.com/docker/machine/libmachine/state"
-
-	"github.com/codegangsta/cli"
 )
 
-func cmdSsh(c *cli.Context) {
-	args := c.Args()
-	name := args.First()
-
-	if name == "" {
-		log.Fatal("Error: Please specify a machine name.")
+func cmdSSH(c CommandLine, api libmachine.API) error {
+	// Check for help flag -- Needed due to SkipFlagParsing
+	firstArg := c.Args().First()
+	if firstArg == "-help" || firstArg == "--help" || firstArg == "-h" {
+		c.ShowHelp()
+		return nil
 	}
 
-	store := getStore(c)
-	host, err := store.Load(name)
+	name := firstArg
+	if name == "" {
+		return ErrExpectedOneMachine
+	}
+
+	host, err := api.Load(name)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	currentState, err := host.Driver.GetState()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	if currentState != state.Running {
-		log.Fatalf("Error: Cannot run SSH command: Host %q is not running", host.Name)
+		return fmt.Errorf("Error: Cannot run SSH command: Host %q is not running", host.Name)
 	}
 
-	if len(c.Args()) == 1 {
-		err := host.CreateSSHShell()
-		if err != nil {
-			log.Fatal(err)
-		}
-	} else {
-		output, err := host.RunSSHCommand(strings.Join(c.Args().Tail(), " "))
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		fmt.Print(output)
+	client, err := host.CreateSSHClient()
+	if err != nil {
+		return err
 	}
 
+	return client.Shell(c.Args().Tail()...)
 }

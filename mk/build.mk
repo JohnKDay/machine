@@ -1,33 +1,27 @@
+extension = $(patsubst windows,.exe,$(filter windows,$(1)))
+
+# Valid target combinations
+VALID_OS_ARCH := "[darwin/amd64][linux/amd64][windows/amd64][windows/386]"
+
+define gocross
+	$(if $(findstring [$(1)/$(2)],$(VALID_OS_ARCH)), \
+	GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 \
+		$(GO) build \
+		-o $(PREFIX)/bin/docker-machine_$(1)-$(2)$(call extension,$(GOOS)) \
+		-a $(VERBOSE_GO) -tags "static_build netgo $(BUILDTAGS)" -installsuffix netgo \
+		-ldflags "$(GO_LDFLAGS) -extldflags -static" $(GO_GCFLAGS) ./cmd/machine.go;)
+endef
+
 build-clean:
-	@rm -f $(PREFIX)/bin/*
+	rm -Rf $(PREFIX)/bin/*
 
-# Simple build
-build-simple: $(PREFIX)/bin/$(PKG_NAME)
+build-x: $(shell find . -type f -name '*.go')
+	$(foreach GOARCH,$(TARGET_ARCH),$(foreach GOOS,$(TARGET_OS),$(call gocross,$(GOOS),$(GOARCH))))
 
-# XXX building with -a fails in debug (with -N -l) ????
-$(PREFIX)/bin/$(PKG_NAME): $(shell find . -type f -name '*.go')
-	@go build -o $@ $(VERBOSE_GO) -tags "$(BUILDTAGS)" -ldflags "$(GO_LDFLAGS)" $(GO_GCFLAGS) ./main.go
+$(PREFIX)/bin/docker-machine$(call extension,$(GOOS)): $(shell find . -type f -name '*.go')
+	$(GO) build \
+	-o $@ \
+	$(VERBOSE_GO) -tags "$(BUILDTAGS)" \
+	-ldflags "$(GO_LDFLAGS)" $(GO_GCFLAGS) ./cmd/machine.go
 
-# Cross-build: careful, does always rebuild!
-build-x: clean
-	$(if $(GOX), , \
-		$(error Please install gox: go get -u github.com/mitchellh/gox))
-	@$(GOX) \
-		-os "$(TARGET_OS)" \
-		-arch "$(TARGET_ARCH)" \
-		-output="$(PREFIX)/bin/docker-machine_{{.OS}}-{{.Arch}}" \
-		-ldflags="$(GO_LDFLAGS)" \
-		-tags="$(BUILDTAGS)" \
-		-gcflags="$(GO_GCFLAGS)" \
-		-parallel=$(PARALLEL) \
-		-rebuild $(VERBOSE_GOX)
-
-# Cross builder helper
-# define gocross
-# 	GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 go build -o $(PREFIX)/$(PKG_NAME)_$(1)-$(2) \
-# 		-a $(VERBOSE_GO) -tags "static_build netgo $(BUILDTAGS)" -installsuffix netgo -ldflags "$(GO_LDFLAGS) -extldflags -static" $(GO_GCFLAGS) ./main.go;
-# endef
-
-# Native build-x (no gox)
-# build-x: $(shell find . -type f -name '*.go')
-# 	@$(foreach GOARCH,$(TARGET_ARCH),$(foreach GOOS,$(TARGET_OS),$(call gocross,$(GS),$(GA))))
+build: $(PREFIX)/bin/docker-machine$(call extension,$(GOOS))

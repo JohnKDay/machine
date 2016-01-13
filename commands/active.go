@@ -1,24 +1,35 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 
-	"github.com/codegangsta/cli"
-	"github.com/docker/machine/libmachine/log"
+	"github.com/docker/machine/libmachine"
+	"github.com/docker/machine/libmachine/persist"
 )
 
-func cmdActive(c *cli.Context) {
+var (
+	errNoActiveHost = errors.New("No active host found")
+)
+
+func cmdActive(c CommandLine, api libmachine.API) error {
 	if len(c.Args()) > 0 {
-		log.Fatal("Error: Too many arguments given.")
+		return ErrTooManyArguments
 	}
 
-	store := getStore(c)
-	host, err := getActiveHost(store)
+	hosts, hostsInError, err := persist.LoadAllHosts(api)
 	if err != nil {
-		log.Fatalf("Error getting active host: %s", err)
+		return fmt.Errorf("Error getting active host: %s", err)
 	}
 
-	if host != nil {
-		fmt.Println(host.Name)
+	items := getHostListItems(hosts, hostsInError)
+
+	for _, item := range items {
+		if item.ActiveHost {
+			fmt.Println(item.Name)
+			return nil
+		}
 	}
+
+	return errNoActiveHost
 }

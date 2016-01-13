@@ -7,9 +7,9 @@ import (
 
 func TestRedHatGenerateYumRepoList(t *testing.T) {
 	info := &OsRelease{
-		Id: "rhel",
+		ID: "rhel",
 	}
-	p := NewRedHatProvisioner(nil)
+	p := NewRedHatProvisioner("rhel", nil)
 	p.SetOsReleaseInfo(info)
 
 	buf, err := generateYumRepoList(p)

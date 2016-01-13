@@ -7,13 +7,15 @@ package vmwarevcloudair
 import (
 	"fmt"
 	"io/ioutil"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/vmware/govcloudair"
 
-	"github.com/codegangsta/cli"
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
+	"github.com/docker/machine/libmachine/mcnflag"
 	"github.com/docker/machine/libmachine/mcnutils"
 	"github.com/docker/machine/libmachine/ssh"
 	"github.com/docker/machine/libmachine/state"
@@ -31,7 +33,6 @@ type Driver struct {
 	Catalog      string
 	CatalogItem  string
 	DockerPort   int
-	Provision    bool
 	CPUCount     int
 	MemorySize   int
 	VAppID       string
@@ -46,90 +47,76 @@ const (
 	defaultDockerPort  = 2376
 )
 
-func init() {
-	drivers.Register("vmwarevcloudair", &drivers.RegisteredDriver{
-		GetCreateFlags: GetCreateFlags,
-	})
-}
-
 // GetCreateFlags registers the flags this driver adds to
 // "docker hosts create"
-func GetCreateFlags() []cli.Flag {
-	return []cli.Flag{
-		cli.StringFlag{
+func (d *Driver) GetCreateFlags() []mcnflag.Flag {
+	return []mcnflag.Flag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_USERNAME",
 			Name:   "vmwarevcloudair-username",
 			Usage:  "vCloud Air username",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_PASSWORD",
 			Name:   "vmwarevcloudair-password",
 			Usage:  "vCloud Air password",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_COMPUTEID",
 			Name:   "vmwarevcloudair-computeid",
 			Usage:  "vCloud Air Compute ID (if using Dedicated Cloud)",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_VDCID",
 			Name:   "vmwarevcloudair-vdcid",
 			Usage:  "vCloud Air VDC ID",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_ORGVDCNETWORK",
 			Name:   "vmwarevcloudair-orgvdcnetwork",
 			Usage:  "vCloud Air Org VDC Network (Default is <vdcid>-default-routed)",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_EDGEGATEWAY",
 			Name:   "vmwarevcloudair-edgegateway",
 			Usage:  "vCloud Air Org Edge Gateway (Default is <vdcid>)",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_PUBLICIP",
 			Name:   "vmwarevcloudair-publicip",
 			Usage:  "vCloud Air Org Public IP to use",
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_CATALOG",
 			Name:   "vmwarevcloudair-catalog",
 			Usage:  "vCloud Air Catalog (default is Public Catalog)",
 			Value:  defaultCatalog,
 		},
-		cli.StringFlag{
+		mcnflag.StringFlag{
 			EnvVar: "VCLOUDAIR_CATALOGITEM",
 			Name:   "vmwarevcloudair-catalogitem",
 			Usage:  "vCloud Air Catalog Item (default is Ubuntu Precise)",
 			Value:  defaultCatalogItem,
 		},
-
-		// BoolTFlag is true by default.
-		cli.BoolTFlag{
-			EnvVar: "VCLOUDAIR_PROVISION",
-			Name:   "vmwarevcloudair-provision",
-			Usage:  "vCloud Air Install Docker binaries (default is true)",
-		},
-
-		cli.IntFlag{
+		mcnflag.IntFlag{
 			EnvVar: "VCLOUDAIR_CPU_COUNT",
 			Name:   "vmwarevcloudair-cpu-count",
 			Usage:  "vCloud Air VM Cpu Count (default 1)",
 			Value:  defaultCpus,
 		},
-		cli.IntFlag{
+		mcnflag.IntFlag{
 			EnvVar: "VCLOUDAIR_MEMORY_SIZE",
 			Name:   "vmwarevcloudair-memory-size",
 			Usage:  "vCloud Air VM Memory Size in MB (default 2048)",
 			Value:  defaultMemory,
 		},
-		cli.IntFlag{
+		mcnflag.IntFlag{
 			EnvVar: "VCLOUDAIR_SSH_PORT",
 			Name:   "vmwarevcloudair-ssh-port",
 			Usage:  "vCloud Air SSH port",
 			Value:  defaultSSHPort,
 		},
-		cli.IntFlag{
+		mcnflag.IntFlag{
 			EnvVar: "VCLOUDAIR_DOCKER_PORT",
 			Name:   "vmwarevcloudair-docker-port",
 			Usage:  "vCloud Air Docker port",
@@ -157,7 +144,7 @@ func (d *Driver) GetSSHHostname() (string, error) {
 	return d.GetIP()
 }
 
-// Driver interface implementation
+// DriverName returns the name of the driver
 func (d *Driver) DriverName() string {
 	return "vmwarevcloudair"
 }
@@ -168,9 +155,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.UserPassword = flags.String("vmwarevcloudair-password")
 	d.VDCID = flags.String("vmwarevcloudair-vdcid")
 	d.PublicIP = flags.String("vmwarevcloudair-publicip")
-	d.SwarmMaster = flags.Bool("swarm-master")
-	d.SwarmHost = flags.String("swarm-host")
-	d.SwarmDiscovery = flags.String("swarm-discovery")
+	d.SetSwarmConfigFromFlags(flags)
 
 	// Check for required Params
 	if d.UserName == "" || d.UserPassword == "" || d.VDCID == "" || d.PublicIP == "" {
@@ -204,7 +189,6 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.DockerPort = flags.Int("vmwarevcloudair-docker-port")
 	d.SSHUser = "root"
 	d.SSHPort = flags.Int("vmwarevcloudair-ssh-port")
-	d.Provision = flags.Bool("vmwarevcloudair-provision")
 	d.CPUCount = flags.Int("vmwarevcloudair-cpu-count")
 	d.MemorySize = flags.Int("vmwarevcloudair-memory-size")
 
@@ -212,7 +196,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 }
 
 func (d *Driver) GetURL() (string, error) {
-	return fmt.Sprintf("tcp://%s:%d", d.PublicIP, d.DockerPort), nil
+	return fmt.Sprintf("tcp://%s", net.JoinHostPort(d.PublicIP, strconv.Itoa(d.DockerPort))), nil
 }
 
 func (d *Driver) GetIP() (string, error) {
@@ -220,7 +204,6 @@ func (d *Driver) GetIP() (string, error) {
 }
 
 func (d *Driver) GetState() (state.State, error) {
-
 	p, err := govcloudair.NewClient()
 	if err != nil {
 		return state.Error, err
@@ -254,15 +237,9 @@ func (d *Driver) GetState() (state.State, error) {
 		return state.Stopped, nil
 	}
 	return state.None, nil
-
-}
-
-func (d *Driver) PreCreateCheck() error {
-	return nil
 }
 
 func (d *Driver) Create() error {
-
 	key, err := d.createSSHKey()
 	if err != nil {
 		return err
@@ -472,7 +449,6 @@ func (d *Driver) Remove() error {
 }
 
 func (d *Driver) Start() error {
-
 	p, err := govcloudair.NewClient()
 	if err != nil {
 		return err
@@ -516,7 +492,6 @@ func (d *Driver) Start() error {
 }
 
 func (d *Driver) Stop() error {
-
 	p, err := govcloudair.NewClient()
 	if err != nil {
 		return err
@@ -534,21 +509,12 @@ func (d *Driver) Stop() error {
 		return err
 	}
 
-	status, err := vapp.GetStatus()
+	task, err := vapp.Shutdown()
 	if err != nil {
 		return err
 	}
-
-	if status == "POWERED_ON" {
-		log.Infof("Shutting down %s...", d.MachineName)
-		task, err := vapp.Shutdown()
-		if err != nil {
-			return err
-		}
-		if err = task.WaitTaskCompletion(); err != nil {
-			return err
-		}
-
+	if err = task.WaitTaskCompletion(); err != nil {
+		return err
 	}
 
 	if err = p.Disconnect(); err != nil {
@@ -561,7 +527,6 @@ func (d *Driver) Stop() error {
 }
 
 func (d *Driver) Restart() error {
-
 	p, err := govcloudair.NewClient()
 	if err != nil {
 		return err
@@ -579,33 +544,12 @@ func (d *Driver) Restart() error {
 		return err
 	}
 
-	status, err := vapp.GetStatus()
+	task, err := vapp.Reset()
 	if err != nil {
 		return err
 	}
-
-	if status == "POWERED_ON" {
-		// If it's powered on, restart the machine
-		log.Infof("Restarting %s...", d.MachineName)
-		task, err := vapp.Reset()
-		if err != nil {
-			return err
-		}
-		if err = task.WaitTaskCompletion(); err != nil {
-			return err
-		}
-
-	} else {
-		// If it's not powered on, start it.
-		log.Infof("Docker host %s is powered off, powering it back on...", d.MachineName)
-		task, err := vapp.PowerOn()
-		if err != nil {
-			return err
-		}
-		if err = task.WaitTaskCompletion(); err != nil {
-			return err
-		}
-
+	if err = task.WaitTaskCompletion(); err != nil {
+		return err
 	}
 
 	if err = p.Disconnect(); err != nil {
@@ -634,21 +578,12 @@ func (d *Driver) Kill() error {
 		return err
 	}
 
-	status, err := vapp.GetStatus()
+	task, err := vapp.PowerOff()
 	if err != nil {
 		return err
 	}
-
-	if status == "POWERED_ON" {
-		log.Infof("Stopping %s...", d.MachineName)
-		task, err := vapp.PowerOff()
-		if err != nil {
-			return err
-		}
-		if err = task.WaitTaskCompletion(); err != nil {
-			return err
-		}
-
+	if err = task.WaitTaskCompletion(); err != nil {
+		return err
 	}
 
 	if err = p.Disconnect(); err != nil {

@@ -1,9 +1,9 @@
 # Initialize version and gc flags
-GO_LDFLAGS := -X `go list ./version`.GitCommit=`git rev-parse --short HEAD`
+GO_LDFLAGS := -X `go list ./version`.GitCommit=`git rev-parse --short HEAD 2>/dev/null`
 GO_GCFLAGS :=
 
 # Full package list
-PKGS := $(shell go list -tags "$(BUILDTAGS)" ./... | grep -v "/vendor/" | grep -v "/Godeps/")
+PKGS := $(shell go list -tags "$(BUILDTAGS)" ./... | grep -v "/vendor/" | grep -v "/cmd")
 
 # Support go1.5 vendoring (let us avoid messing with GOPATH or using godep)
 export GO15VENDOREXPERIMENT = 1
@@ -12,8 +12,8 @@ export GO15VENDOREXPERIMENT = 1
 GOLINT_BIN := $(GOPATH)/bin/golint
 GOLINT := $(shell [ -x $(GOLINT_BIN) ] && echo $(GOLINT_BIN) || echo '')
 
-GOX_BIN := $(GOPATH)/bin/gox
-GOX := $(shell [ -x $(GOX_BIN) ] && echo $(GOX_BIN) || echo '')
+GODEP_BIN := $(GOPATH)/bin/godep
+GODEP := $(shell [ -x $(GODEP_BIN) ] && echo $(GODEP_BIN) || echo '')
 
 # Honor debug
 ifeq ($(DEBUG),true)
@@ -32,15 +32,14 @@ endif
 
 # Honor verbose
 VERBOSE_GO := 
-VERBOSE_GOX :=
+GO := go
 ifeq ($(VERBOSE),true)
 	VERBOSE_GO := -v
-	VERBOSE_GOX := -verbose
 endif
 
 include mk/build.mk
 include mk/coverage.mk
-include mk/release.mk
+include mk/dev.mk
 include mk/test.mk
 include mk/validate.mk
 
@@ -50,4 +49,13 @@ include mk/validate.mk
 .all_test: test-short test-long test-integration
 .all_validate: dco fmt vet lint
 
-.PHONY: .all_build .all_coverage .all_release .all_test .all_validate
+default: build
+
+install:
+	cp $(PREFIX)/bin/docker-machine /usr/local/bin
+
+clean: coverage-clean build-clean
+test: dco fmt test-short lint vet
+validate: dco fmt lint vet test-long
+
+.PHONY: .all_build .all_coverage .all_release .all_test .all_validate test build validate clean

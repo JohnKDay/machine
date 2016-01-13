@@ -5,11 +5,16 @@ import (
 	"os"
 	"testing"
 
-	"github.com/docker/machine/drivers/amazonec2/amz"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/docker/machine/commands/commandstest"
+	"github.com/docker/machine/commands/mcndirs"
+	"github.com/docker/machine/libmachine/drivers"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
-	testSshPort           = 22
+	testSSHPort           = 22
 	testDockerPort        = 2376
 	testStoreDir          = ".store-test"
 	machineTestName       = "test-host"
@@ -20,32 +25,12 @@ const (
 )
 
 var (
-	securityGroup = amz.SecurityGroup{
-		GroupName: "test-group",
-		GroupId:   "12345",
-		VpcId:     "12345",
+	securityGroup = &ec2.SecurityGroup{
+		GroupName: aws.String("test-group"),
+		GroupId:   aws.String("12345"),
+		VpcId:     aws.String("12345"),
 	}
 )
-
-type DriverOptionsMock struct {
-	Data map[string]interface{}
-}
-
-func (d DriverOptionsMock) String(key string) string {
-	return d.Data[key].(string)
-}
-
-func (d DriverOptionsMock) StringSlice(key string) []string {
-	return d.Data[key].([]string)
-}
-
-func (d DriverOptionsMock) Int(key string) int {
-	return d.Data[key].(int)
-}
-
-func (d DriverOptionsMock) Bool(key string) bool {
-	return d.Data[key].(bool)
-}
 
 func cleanup() error {
 	return os.RemoveAll(testStoreDir)
@@ -56,12 +41,12 @@ func getTestStorePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	os.Setenv("MACHINE_STORAGE_PATH", tmpDir)
+	mcndirs.BaseDir = tmpDir
 	return tmpDir, nil
 }
 
-func getDefaultTestDriverFlags() *DriverOptionsMock {
-	return &DriverOptionsMock{
+func getDefaultTestDriverFlags() *commandstest.FakeFlagger {
+	return &commandstest.FakeFlagger{
 		Data: map[string]interface{}{
 			"name":                            "test",
 			"url":                             "unix:///var/run/docker.sock",
@@ -112,7 +97,7 @@ func TestConfigureSecurityGroupPermissionsEmpty(t *testing.T) {
 	defer cleanup()
 
 	group := securityGroup
-	perms := d.configureSecurityGroupPermissions(&group)
+	perms := d.configureSecurityGroupPermissions(group)
 	if len(perms) != 2 {
 		t.Fatalf("expected 2 permissions; received %d", len(perms))
 	}
@@ -127,20 +112,20 @@ func TestConfigureSecurityGroupPermissionsSshOnly(t *testing.T) {
 
 	group := securityGroup
 
-	group.IpPermissions = []amz.IpPermission{
+	group.IpPermissions = []*ec2.IpPermission{
 		{
-			IpProtocol: "tcp",
-			FromPort:   testSshPort,
-			ToPort:     testSshPort,
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(int64(testSSHPort)),
+			ToPort:     aws.Int64(int64(testSSHPort)),
 		},
 	}
 
-	perms := d.configureSecurityGroupPermissions(&group)
+	perms := d.configureSecurityGroupPermissions(group)
 	if len(perms) != 1 {
 		t.Fatalf("expected 1 permission; received %d", len(perms))
 	}
 
-	receivedPort := perms[0].FromPort
+	receivedPort := *perms[0].FromPort
 	if receivedPort != testDockerPort {
 		t.Fatalf("expected permission on port %d; received port %d", testDockerPort, receivedPort)
 	}
@@ -155,22 +140,22 @@ func TestConfigureSecurityGroupPermissionsDockerOnly(t *testing.T) {
 
 	group := securityGroup
 
-	group.IpPermissions = []amz.IpPermission{
+	group.IpPermissions = []*ec2.IpPermission{
 		{
-			IpProtocol: "tcp",
-			FromPort:   testDockerPort,
-			ToPort:     testDockerPort,
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64((testDockerPort)),
+			ToPort:     aws.Int64((testDockerPort)),
 		},
 	}
 
-	perms := d.configureSecurityGroupPermissions(&group)
+	perms := d.configureSecurityGroupPermissions(group)
 	if len(perms) != 1 {
 		t.Fatalf("expected 1 permission; received %d", len(perms))
 	}
 
-	receivedPort := perms[0].FromPort
-	if receivedPort != testSshPort {
-		t.Fatalf("expected permission on port %d; received port %d", testSshPort, receivedPort)
+	receivedPort := *perms[0].FromPort
+	if receivedPort != testSSHPort {
+		t.Fatalf("expected permission on port %d; received port %d", testSSHPort, receivedPort)
 	}
 }
 
@@ -183,20 +168,20 @@ func TestConfigureSecurityGroupPermissionsDockerAndSsh(t *testing.T) {
 
 	group := securityGroup
 
-	group.IpPermissions = []amz.IpPermission{
+	group.IpPermissions = []*ec2.IpPermission{
 		{
-			IpProtocol: "tcp",
-			FromPort:   testSshPort,
-			ToPort:     testSshPort,
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(testSSHPort),
+			ToPort:     aws.Int64(testSSHPort),
 		},
 		{
-			IpProtocol: "tcp",
-			FromPort:   testDockerPort,
-			ToPort:     testDockerPort,
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(testDockerPort),
+			ToPort:     aws.Int64(testDockerPort),
 		},
 	}
 
-	perms := d.configureSecurityGroupPermissions(&group)
+	perms := d.configureSecurityGroupPermissions(group)
 	if len(perms) != 0 {
 		t.Fatalf("expected 0 permissions; received %d", len(perms))
 	}
@@ -233,4 +218,23 @@ func TestValidateAwsRegionInvalid(t *testing.T) {
 			t.Fatal("Wrong region returned")
 		}
 	}
+}
+
+func TestSetConfigFromFlags(t *testing.T) {
+	driver, err := getTestDriver()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checkFlags := &drivers.CheckDriverOptions{
+		FlagsValues: map[string]interface{}{
+			"amazonec2-region": "us-west-2",
+		},
+		CreateFlags: driver.GetCreateFlags(),
+	}
+
+	driver.SetConfigFromFlags(checkFlags)
+
+	assert.NoError(t, err)
+	assert.Empty(t, checkFlags.InvalidFlags)
 }

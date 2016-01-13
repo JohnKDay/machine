@@ -1,18 +1,26 @@
 package commands
 
 import (
-	"github.com/codegangsta/cli"
+	"github.com/docker/machine/libmachine"
 	"github.com/docker/machine/libmachine/log"
 )
 
-func cmdStatus(c *cli.Context) {
+func cmdStatus(c CommandLine, api libmachine.API) error {
 	if len(c.Args()) != 1 {
-		log.Fatal(ErrExpectedOneMachine)
+		return ErrExpectedOneMachine
 	}
-	host := getFirstArgHost(c)
+
+	host, err := api.Load(c.Args().First())
+	if err != nil {
+		return err
+	}
+
 	currentState, err := host.Driver.GetState()
 	if err != nil {
 		log.Errorf("error getting state for host %s: %s", host.Name, err)
 	}
+
 	log.Info(currentState)
+
+	return nil
 }
